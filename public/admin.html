@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Upload - Admin</title>
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <a class="logo" href="/"><span class="logo-mark"></span><span class="name site-name"></span></a>
+    <div class="header-actions">
+      <a class="btn-like secondary" id="viewSite" href="/" hidden>View site ↗</a>
+      <button class="secondary" id="logout" hidden>Log out</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Login -->
+    <form class="panel login" id="loginForm" hidden>
+      <h2>Owner login</h2>
+      <label for="password">Password</label>
+      <input type="password" id="password" autocomplete="current-password" required>
+      <p class="status error" id="loginError"></p>
+      <button type="submit">Log in</button>
+    </form>
+
+    <!-- Dashboard -->
+    <div id="dashboard" hidden>
+      <form class="panel" id="uploadForm">
+        <h2>Upload a video</h2>
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept="video/*">
+          <span id="dropText">Click to choose a video, or drag it here</span>
+        </label>
+        <label for="title">Title</label>
+        <input type="text" id="title" maxlength="200" placeholder="Defaults to the file name">
+        <label for="description">Description (optional)</label>
+        <textarea id="description" maxlength="5000"></textarea>
+        <label for="tags">Tags (separate with commas)</label>
+        <input type="text" id="tags" placeholder="e.g. travel, vlog, mountains" list="tagSuggestions">
+        <datalist id="tagSuggestions"></datalist>
+        <label>Thumbnail (optional)</label>
+        <div class="thumb-pick">
+          <div class="thumb-pick-preview" id="thumbPreview"><span>Automatic</span></div>
+          <div class="thumb-pick-side">
+            <div class="edit-actions">
+              <label class="btn-like secondary" for="thumbFile">Choose image</label>
+              <button type="button" class="secondary" id="thumbClear" hidden>Remove</button>
+            </div>
+            <input type="file" id="thumbFile" accept="image/jpeg,image/png,image/webp" class="visually-hidden">
+            <p class="meta">JPG, PNG or WebP, under 15 MB. Wide 16:9 images look best (for example 1280 × 720).
+              If you skip this, a frame from the video is used, and you can change it any time later.</p>
+          </div>
+        </div>
+        <div class="progress" id="progress"><div></div></div>
+        <p class="status" id="uploadStatus"></p>
+        <button type="submit" id="uploadBtn">Upload</button>
+      </form>
+
+      <section class="panel" id="bannerPanel">
+        <h2>Home page banner <span class="count-badge neutral" id="featCount"></span></h2>
+        <p class="meta" id="featNote"></p>
+        <ol class="feat-list" id="featList"></ol>
+        <div class="feat-add">
+          <input type="search" id="featSearch" placeholder="Search your videos to add to the banner..." autocomplete="off" aria-label="Search videos to feature">
+          <ul class="feat-results" id="featResults" hidden></ul>
+        </div>
+        <div class="feat-footer">
+          <p class="status" id="featStatus">Changes save automatically.</p>
+          <a class="btn-like" href="/" id="featView">See it on the home page →</a>
+        </div>
+      </section>
+
+      <section class="panel" id="reportsPanel" hidden>
+        <h2>Reports from viewers <span class="count-badge" id="reportCount"></span></h2>
+        <ul class="admin-list" id="reports"></ul>
+      </section>
+
+      <section class="panel">
+        <h2>Viewer accounts <span class="count-badge neutral" id="userCount"></span></h2>
+        <p class="meta" id="mailNote"></p>
+        <ul class="admin-list" id="users"></ul>
+        <p class="meta" id="noUsers" hidden>No one has signed up yet.</p>
+        <div class="pager-bar"><p class="pager-summary" id="userSummary"></p><nav class="pager" id="userPager" aria-label="Viewer pages"></nav></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Your videos <span class="count-badge neutral" id="videoCount"></span></h2>
+          <input type="search" id="listSearch" placeholder="Search your videos..." aria-label="Search your videos" autocomplete="off">
+        </div>
+        <ul class="admin-list" id="list"></ul>
+        <p class="meta" id="noVideos" hidden>Nothing uploaded yet.</p>
+        <div class="pager-bar" id="listPagerBar"><p class="pager-summary" id="listSummary"></p><nav class="pager" id="listPager" aria-label="Video pages"></nav></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/i18n.js"></script>
+  <script src="/common.js"></script>
+  <script>
+    applySiteName();
+    const $ = (id) => document.getElementById(id);
+
+    async function init() {
+      const { admin } = await getJSON('/api/me');
+      $('loginForm').hidden = admin;
+      $('dashboard').hidden = !admin;
+      $('logout').hidden = !admin;
+      $('viewSite').hidden = !admin;
+      if (admin) { await loadFeatured(); loadList(); loadReports(); loadUsers(); }
+      else $('password').focus();
+    }
+
+    $('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      $('loginError').textContent = '';
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: $('password').value }),
+      });
+      if (res.ok) { $('password').value = ''; init(); }
+      else $('loginError').textContent = (await res.json()).error || 'Login failed';
+    });
+
+    $('logout').addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      init();
+    });
+
+    // ----- File picking / drag and drop -----
+    let chosen = null;
+    function choose(file) {
+      if (!file) return;
+      if (!file.type.startsWith('video/')) { setStatus('That is not a video file.', true); return; }
+      chosen = file;
+      $('dropText').textContent = `${file.name} (${(file.size / 1048576).toFixed(1)} MB)`;
+      if (!$('title').value) $('title').value = file.name.replace(/\.[^.]+$/, '');
+      setStatus('');
+    }
+    $('file').addEventListener('change', (e) => choose(e.target.files[0]));
+    const drop = $('drop');
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+    drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); choose(e.dataTransfer.files[0]); });
+
+    // ----- Optional thumbnail for the upload -----
+    let thumbChosen = null, thumbUrl = null;
+    function setThumb(file) {
+      if (thumbUrl) URL.revokeObjectURL(thumbUrl);
+      thumbChosen = file || null;
+      thumbUrl = file ? URL.createObjectURL(file) : null;
+      $('thumbPreview').replaceChildren(file ? el('img', { src: thumbUrl, alt: 'Chosen thumbnail' }) : el('span', {}, 'Automatic'));
+      $('thumbClear').hidden = !file;
+      $('thumbFile').value = '';
+    }
+    $('thumbFile').addEventListener('change', (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      if (!/^image\/(jpeg|png|webp)$/.test(f.type)) { setStatus('Thumbnail must be a JPG, PNG or WebP image.', true); return; }
+      if (f.size > 15 * 1048576) { setStatus('Thumbnail image must be under 15 MB.', true); return; }
+      setStatus('');
+      setThumb(f);
+    });
+    $('thumbClear').onclick = () => setThumb(null);
+
+    function setStatus(msg, isError = false) {
+      $('uploadStatus').textContent = msg;
+      $('uploadStatus').classList.toggle('error', isError);
+    }
+
+    // ----- Upload with progress -----
+    $('uploadForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!chosen) { setStatus('Choose a video first.', true); return; }
+      const form = new FormData();
+      form.append('title', $('title').value);
+      form.append('description', $('description').value);
+      form.append('tags', $('tags').value);
+      if (thumbChosen) form.append('thumbnail', thumbChosen);
+      form.append('video', chosen);
+
+      const xhr = new XMLHttpRequest();
+      const bar = $('progress');
+      bar.style.display = 'block';
+      $('uploadBtn').disabled = true;
+      xhr.upload.onprogress = (ev) => {
+        if (!ev.lengthComputable) return;
+        const pct = Math.round((ev.loaded / ev.total) * 100);
+        bar.firstElementChild.style.width = pct + '%';
+        setStatus(`Uploading... ${pct}%`);
+      };
+      xhr.onload = () => {
+        $('uploadBtn').disabled = false;
+        bar.style.display = 'none';
+        bar.firstElementChild.style.width = '0';
+        let body = {};
+        try { body = JSON.parse(xhr.responseText); } catch {}
+        if (xhr.status === 201) {
+          setStatus(body.thumbWarning ? 'Uploaded! ' + body.thumbWarning : 'Uploaded! It is now live on the site.', !!body.thumbWarning);
+          $('uploadForm').reset();
+          setThumb(null);
+          chosen = null;
+          $('dropText').textContent = 'Click to choose a video, or drag it here';
+          loadList();
+        } else if (xhr.status === 401) {
+          init();
+        } else {
+          setStatus(body.error || 'Upload failed.', true);
+        }
+      };
+      xhr.onerror = () => {
+        $('uploadBtn').disabled = false;
+        bar.style.display = 'none';
+        setStatus('Network error during upload.', true);
+      };
+      xhr.open('POST', '/api/videos');
+      xhr.send(form);
+    });
+
+    // ----- Manage list -----
+    let pollTimer = null;
+    function qualityText(v) {
+      const made = v.sources.filter((s) => !s.original).map((s) => s.label);
+      if (v.processing) {
+        const p = v.processing;
+        if (p.label === 'queued') return 'Waiting to be processed...';
+        if (p.label === 'thumbnail') return 'Making the thumbnail...';
+        if (p.label === 'preview frames') return 'Making progress-bar preview images...';
+        if (p.label === 'streaming') return `Preparing Auto quality streaming... ${p.pct}%`;
+        return `Making ${p.label} version... ${p.pct}%`;
+      }
+      return made.length ? `Qualities: Original, ${made.join(', ')}` : 'Qualities: Original only';
+    }
+
+    async function loadList() {
+      clearTimeout(pollTimer);
+      const videos = await getJSON('/api/videos');
+      // Your list always uses the real upload order, newest first.
+      videos.sort((x, y) => y.createdAt.localeCompare(x.createdAt));
+      allVideos = videos;
+      renderFeatured();
+      if (videos.some((v) => v.processing)) pollTimer = setTimeout(loadList, 2000);
+      $('noVideos').hidden = videos.length > 0;
+      // Suggest tags you've used before.
+      const used = [...new Set(videos.flatMap((v) => v.tags))].sort();
+      $('tagSuggestions').replaceChildren(...used.map((t) => el('option', { value: t })));
+
+      $('videoCount').textContent = videos.length;
+      const q = $('listSearch').value.trim().toLowerCase();
+      const matching = q ? videos.filter((v) => (v.title + ' ' + v.tags.join(' ')).toLowerCase().includes(q)) : videos;
+      if (q && !matching.length) $('noVideos').hidden = false, $('noVideos').textContent = 'No videos match your search.';
+      else $('noVideos').textContent = 'Nothing uploaded yet.';
+      const pageVideos = paginate(matching, listPage, ADMIN_PER_PAGE, $('listPager'), $('listSummary'), 'videos', (p) => {
+        listPage = p; loadList(); $('list').closest('.panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      $('list').replaceChildren(...pageVideos.map((v) => {
+        const li = el('li', {});
+        const edit = el('button', { class: 'secondary', type: 'button' }, 'Edit');
+        edit.onclick = () => {
+          clearTimeout(pollTimer); // don't refresh the list while editing
+          const title = el('input', { type: 'text', maxlength: '200' }); title.value = v.title;
+          const desc = el('textarea', { maxlength: '5000' }); desc.value = v.description;
+          const tags = el('input', { type: 'text', list: 'tagSuggestions', placeholder: 'travel, vlog, mountains' });
+          tags.value = v.tags.join(', ');
+          const save = el('button', { type: 'submit' }, 'Save');
+          const cancel = el('button', { class: 'secondary', type: 'button' }, 'Cancel');
+          cancel.onclick = loadList;
+          const form = el('form', { class: 'edit-form' },
+            thumbnailEditor(v),
+            el('label', {}, 'Title'), title,
+            el('label', {}, 'Description'), desc,
+            el('label', {}, 'Tags (separate with commas)'), tags,
+            el('div', { class: 'edit-actions' }, save, cancel));
+          form.onsubmit = async (e) => {
+            e.preventDefault();
+            save.disabled = true;
+            await fetch('/api/videos/' + v.id, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: title.value, description: desc.value, tags: tags.value }),
+            });
+            loadList();
+          };
+          li.replaceChildren(form);
+          title.focus();
+        };
+        const openThumb = () => {
+          clearTimeout(pollTimer); // keep the list still while the window is open
+          openModal('Thumbnail: ' + v.title, thumbnailEditor(v, () => loadList()));
+        };
+        const isFeat = featured.includes(v.id);
+        const featBtn = el('button', { class: 'secondary feat-toggle' + (isFeat ? ' on' : ''), type: 'button', 'aria-pressed': String(isFeat),
+          title: isFeat ? 'Remove from the home page banner' : 'Show in the home page banner' }, isFeat ? '★ Featured' : '☆ Feature');
+        featBtn.onclick = () => {
+          if (isFeat) return saveFeatured(featured.filter((id) => id !== v.id));
+          if (featured.length >= MAX_FEATURED) { featStatus(`The banner already has ${MAX_FEATURED} videos. Remove one first.`, true); $('bannerPanel').scrollIntoView({ behavior: 'smooth' }); return; }
+          saveFeatured([...featured, v.id]);
+        };
+        const thumbBtn = el('button', { class: 'secondary', type: 'button' }, 'Thumbnail');
+        thumbBtn.onclick = openThumb;
+        const del = el('button', { class: 'danger', type: 'button' }, 'Delete');
+        del.onclick = async () => {
+          if (!confirm(`Delete "${v.title}"? This cannot be undone.`)) return;
+          await fetch('/api/videos/' + v.id, { method: 'DELETE' });
+          loadList();
+        };
+        li.append(
+          (() => {
+            const b = el('button', { class: 'admin-thumb-btn', type: 'button', title: 'Change thumbnail', 'aria-label': 'Change thumbnail for ' + v.title },
+              v.poster ? el('img', { class: 'admin-thumb', src: v.poster, alt: '' }) : el('div', { class: 'admin-thumb' }),
+              el('span', { class: 'admin-thumb-edit' }, 'Change'),
+              ...(v.customPoster ? [el('span', { class: 'admin-thumb-badge' }, 'Custom')] : []));
+            b.onclick = openThumb;
+            return b;
+          })(),
+          el('div', { class: 'info' },
+            el('a', { href: '/watch?v=' + encodeURIComponent(v.id) }, v.title),
+            el('div', { class: 'meta' }, `Uploaded ${timeAgo(v.createdAt)} · ${(v.size / 1048576).toFixed(1)} MB · ${(v.views || 0).toLocaleString()} views`),
+            el('div', { class: 'meta' }, qualityText(v)),
+            el('div', { class: 'card-tags' }, ...(v.tags.length ? v.tags.map((t) => el('span', {}, '#' + t)) : [el('span', { class: 'meta' }, 'No tags yet')]))),
+          featBtn, edit, thumbBtn, del);
+        return li;
+      }));
+    }
+
+    // ----- Pages for long lists -----
+    const ADMIN_PER_PAGE = 10;
+    let listPage = 1, userPage = 1;
+    // Returns the items for this page and draws "‹ Previous 1 2 3 Next ›" into pagerEl.
+    function paginate(items, page, perPage, pagerEl, summaryEl, noun, onGo) {
+      const pages = Math.max(1, Math.ceil(items.length / perPage));
+      page = Math.min(pages, Math.max(1, page));
+      const from = (page - 1) * perPage;
+      summaryEl.textContent = items.length > perPage ? `Showing ${from + 1}–${Math.min(from + perPage, items.length)} of ${items.length} ${noun}` : '';
+      const btn = (label, target, cls, disabled, aria) => {
+        const b = el('button', { type: 'button', class: 'pager-btn' + (cls ? ' ' + cls : ''), 'aria-label': aria || label });
+        b.textContent = label;
+        if (disabled) b.disabled = true; else b.onclick = () => onGo(target);
+        if (cls === 'current') b.setAttribute('aria-current', 'page');
+        return b;
+      };
+      const keep = new Set([1, pages, page - 1, page, page + 1]);
+      const nums = [...keep].filter((n) => n >= 1 && n <= pages).sort((a, b) => a - b);
+      const parts = [];
+      nums.forEach((n, i) => {
+        if (i && n - nums[i - 1] > 1) parts.push(el('span', { class: 'pager-gap' }, '…'));
+        parts.push(btn(String(n), n, n === page ? 'current' : '', false, 'Page ' + n));
+      });
+      pagerEl.replaceChildren(btn('‹ Previous', page - 1, 'wide', page === 1, 'Previous page'), ...parts, btn('Next ›', page + 1, 'wide', page === pages, 'Next page'));
+      pagerEl.hidden = pages === 1;
+      return items.slice(from, from + perPage);
+    }
+    let searchTimer;
+    $('listSearch').addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => { listPage = 1; loadList(); }, 200);
+    });
+
+    // ----- Home page banner (featured videos) -----
+    let featured = [], allVideos = [], MAX_FEATURED = 5;
+    async function loadFeatured() {
+      const r = await getJSON('/api/featured').catch(() => ({ ids: [], max: 5 }));
+      featured = r.ids;
+      MAX_FEATURED = r.max || 5;
+    }
+    function featStatus(msg, isError = false) {
+      $('featStatus').textContent = msg;
+      $('featStatus').classList.toggle('error', isError);
+    }
+    async function saveFeatured(ids) {
+      const res = await fetch('/api/featured', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { featStatus(data.error || 'Could not save the banner.', true); return; }
+      featured = data.ids;
+      featStatus('✓ Saved. The home page banner is updated.');
+      loadList();
+    }
+    function renderFeatured() {
+      const byId = new Map(allVideos.map((v) => [v.id, v]));
+      featured = featured.filter((id) => byId.has(id));
+      $('featCount').textContent = `${featured.length} / ${MAX_FEATURED}`;
+      $('featNote').textContent = featured.length
+        ? 'These play in the banner at the top of the home page, in this order. Use the arrows to reorder.'
+        : 'No videos picked yet, so the banner shows your 5 newest uploads. Add up to 5 videos to choose them yourself.';
+      const slots = [];
+      for (let i = 0; i < MAX_FEATURED; i++) {
+        const v = byId.get(featured[i]);
+        if (!v) { slots.push(el('li', { class: 'feat-slot empty' }, el('span', { class: 'feat-num' }, String(i + 1)), el('span', { class: 'meta' }, 'Empty slot'))); continue; }
+        const move = (dir) => {
+          const ids = [...featured];
+          [ids[i], ids[i + dir]] = [ids[i + dir], ids[i]];
+          saveFeatured(ids);
+        };
+        const up = el('button', { class: 'secondary icon-btn', type: 'button', 'aria-label': 'Move up', title: 'Move up' }, '↑');
+        const down = el('button', { class: 'secondary icon-btn', type: 'button', 'aria-label': 'Move down', title: 'Move down' }, '↓');
+        const remove = el('button', { class: 'secondary icon-btn', type: 'button', 'aria-label': 'Remove from banner', title: 'Remove from banner' }, '✕');
+        up.disabled = i === 0;
+        down.disabled = i === featured.length - 1;
+        up.onclick = () => move(-1);
+        down.onclick = () => move(1);
+        remove.onclick = () => saveFeatured(featured.filter((id) => id !== v.id));
+        slots.push(el('li', { class: 'feat-slot' },
+          el('span', { class: 'feat-num' }, String(i + 1)),
+          v.poster ? el('img', { class: 'feat-thumb', src: v.poster, alt: '' }) : el('div', { class: 'feat-thumb' }),
+          el('span', { class: 'feat-title' }, v.title),
+          el('div', { class: 'feat-actions' }, up, down, remove)));
+      }
+      $('featList').replaceChildren(...slots);
+      const full = featured.length >= MAX_FEATURED;
+      $('featSearch').disabled = full;
+      $('featSearch').placeholder = full ? 'The banner is full. Remove a video to add another.' : 'Search your videos to add to the banner...';
+      renderResults();
+    }
+    function renderResults() {
+      const q = $('featSearch').value.trim().toLowerCase();
+      const box = $('featResults');
+      if (!q || featured.length >= MAX_FEATURED) { box.hidden = true; return; }
+      const matches = allVideos.filter((v) => !featured.includes(v.id) && v.title.toLowerCase().includes(q)).slice(0, 6);
+      box.replaceChildren(...(matches.length ? matches.map((v) => {
+        const b = el('button', { type: 'button', class: 'feat-result' },
+          v.poster ? el('img', { class: 'feat-thumb small', src: v.poster, alt: '' }) : el('div', { class: 'feat-thumb small' }),
+          el('span', {}, v.title), el('span', { class: 'meta' }, '+ Add'));
+        b.onclick = () => { $('featSearch').value = ''; box.hidden = true; saveFeatured([...featured, v.id]); };
+        return el('li', {}, b);
+      }) : [el('li', { class: 'meta feat-none' }, 'No matching videos.')]));
+      box.hidden = false;
+    }
+    $('featSearch').addEventListener('input', renderResults);
+    $('featSearch').addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('featSearch').value = ''; renderResults(); } });
+
+    // ----- Thumbnail editor -----
+    function thumbnailEditor(v, onChange) {
+      const img = el('img', { class: 'thumb-edit-img', alt: 'Current thumbnail' });
+      if (v.poster) img.src = v.poster;
+      const status = el('p', { class: 'status' });
+      const kind = el('div', { class: 'meta' }, v.customPoster ? 'Custom thumbnail' : 'Automatic thumbnail');
+      const scrub = el('video', { class: 'thumb-scrub', src: v.url, preload: 'metadata', muted: '', controls: '', playsinline: '' });
+      scrub.muted = true;
+
+      async function send(body, isForm) {
+        status.textContent = 'Saving thumbnail...';
+        status.classList.remove('error');
+        const res = await fetch('/api/videos/' + v.id + '/thumbnail', isForm
+          ? { method: 'POST', body }
+          : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { status.textContent = data.error || 'Could not save the thumbnail.'; status.classList.add('error'); return; }
+        img.src = data.poster;
+        v.poster = data.poster;
+        v.customPoster = data.customPoster;
+        kind.textContent = data.customPoster ? 'Custom thumbnail' : 'Automatic thumbnail';
+        status.textContent = 'Thumbnail updated. It is live on the site now.';
+        if (onChange) onChange(data);
+      }
+
+      const useFrame = el('button', { class: 'secondary', type: 'button' }, 'Use this frame');
+      useFrame.onclick = () => send({ time: scrub.currentTime });
+      const file = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp', class: 'visually-hidden', id: 'thumbFile-' + v.id });
+      file.onchange = () => {
+        if (!file.files[0]) return;
+        const fd = new FormData();
+        fd.append('image', file.files[0]);
+        send(fd, true);
+      };
+      const pickImage = el('label', { class: 'btn-like secondary', for: 'thumbFile-' + v.id }, 'Upload an image');
+      const reset = el('button', { class: 'secondary', type: 'button' }, 'Back to automatic');
+      reset.onclick = () => send({ reset: true });
+
+      return el('div', { class: 'thumb-editor' },
+        el('label', {}, 'Thumbnail'),
+        el('div', { class: 'thumb-editor-row' },
+          el('div', {}, img, kind),
+          el('div', {}, scrub, el('div', { class: 'meta' }, 'Pause the video on the moment you want, then click "Use this frame".'))),
+        el('div', { class: 'edit-actions' }, useFrame, pickImage, file, reset),
+        status);
+    }
+
+    // ----- Reports from viewers -----
+    const REASONS = { broken: 'Video does not play', 'wrong-info': 'Wrong title, description or tags', inappropriate: 'Inappropriate content', copyright: 'Copyright problem', other: 'Something else' };
+    async function loadReports() {
+      const reports = await getJSON('/api/reports').catch(() => []);
+      $('reportsPanel').hidden = reports.length === 0;
+      $('reportCount').textContent = reports.length;
+      $('reports').replaceChildren(...reports.map((r) => {
+        const done = el('button', { class: 'secondary', type: 'button' }, 'Dismiss');
+        done.onclick = async () => { await fetch('/api/reports/' + r.id, { method: 'DELETE' }); loadReports(); };
+        return el('li', {},
+          el('div', { class: 'info' },
+            el('a', { href: '/watch?v=' + encodeURIComponent(r.videoId) }, r.videoTitle),
+            el('div', { class: 'report-reason' }, REASONS[r.reason] || r.reason),
+            ...(r.message ? [el('div', { class: 'report-msg' }, r.message)] : []),
+            el('div', { class: 'meta' }, timeAgo(r.createdAt))),
+          done);
+      }));
+    }
+
+    // ----- Viewer accounts -----
+    async function loadUsers() {
+      const users = await getJSON('/api/admin/users').catch(() => []);
+      $('userCount').textContent = users.length;
+      $('noUsers').hidden = users.length > 0;
+      $('mailNote').textContent = 'If a viewer forgets their password, click "Create reset link" and send them the link (it works once, for 1 hour). ' +
+        'To send reset emails automatically, add SMTP settings to .env (see README).';
+      const pageUsers = paginate(users, userPage, ADMIN_PER_PAGE, $('userPager'), $('userSummary'), 'accounts', (p) => { userPage = p; loadUsers(); });
+      $('users').replaceChildren(...pageUsers.map((u) => {
+        const btn = el('button', { class: 'secondary', type: 'button' }, 'Create reset link');
+        const out = el('div', { class: 'reset-out' });
+        btn.onclick = async () => {
+          const res = await fetch('/api/admin/users/' + encodeURIComponent(u.id) + '/reset-link', { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { out.textContent = data.error || 'Could not create a link.'; return; }
+          const input = el('input', { type: 'text', readonly: '' });
+          input.value = data.link;
+          const copy = el('button', { type: 'button' }, 'Copy');
+          copy.onclick = async () => { copy.textContent = (await copyText(data.link)) ? 'Copied!' : 'Copy failed'; };
+          out.replaceChildren(input, copy);
+          input.select();
+        };
+        return el('li', { class: 'user-row' },
+          el('span', { class: 'avatar' }, (u.name[0] || '?').toUpperCase()),
+          el('div', { class: 'info' },
+            el('strong', {}, u.name),
+            el('div', { class: 'meta' }, `${u.email} · joined ${timeAgo(u.createdAt)} · ${u.comments} comment${u.comments === 1 ? '' : 's'}`),
+            out),
+          btn);
+      }));
+    }
+
+    init();
+  </script>
+</body>
+</html>

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <meta name="referrer" content="no-referrer">
+  <title>Reset password</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <div class="reset-page">
+      <div class="modal reset-card">
+        <div class="modal-head"><h2 id="heading">Choose a new password</h2></div>
+        <form class="auth-form" id="form">
+          <label class="field"><span>New password</span>
+            <input type="password" id="pass" autocomplete="new-password" minlength="8" required>
+            <small>At least 8 characters.</small>
+          </label>
+          <label class="field"><span>Type it again</span>
+            <input type="password" id="pass2" autocomplete="new-password" minlength="8" required>
+          </label>
+          <p class="status error" id="status" role="alert"></p>
+          <button class="btn wide" type="submit" id="save">Save new password</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <script src="/i18n.js"></script>
+  <script src="/common.js"></script>
+  <script>
+    renderSidebar('');
+    applySiteName();
+    const $ = (id) => document.getElementById(id);
+    const token = new URLSearchParams(location.search).get('token') || '';
+    // Remove the token from the address bar so it doesn't stay in browser history.
+    history.replaceState(null, '', '/reset');
+
+    function done(title, text, linkText, href) {
+      $('heading').textContent = title;
+      $('form').replaceWith(el('div', { class: 'auth-done' }, el('p', {}, text), el('a', { class: 'btn wide', href }, linkText)));
+    }
+    if (!token) done('Link not valid', 'This reset link is incomplete. Ask for a new one from the sign-in window.', 'Go to the home page', '/');
+
+    $('form').onsubmit = async (e) => {
+      e.preventDefault();
+      if ($('pass').value !== $('pass2').value) { $('status').textContent = 'The two passwords are different.'; return; }
+      $('save').disabled = true;
+      $('status').textContent = '';
+      const res = await fetch('/api/auth/reset', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, password: $('pass').value }),
+      }).catch(() => null);
+      const data = res ? await res.json().catch(() => ({})) : {};
+      if (res && res.ok) return done('Password changed', `You're signed in as ${data.user.name}.`, 'Start watching', '/');
+      $('status').textContent = data.error || 'Something went wrong. Try again.';
+      $('save').disabled = false;
+    };
+  </script>
+</body>
+</html>

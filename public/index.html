@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Videos</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Home -->
+    <section class="hero" id="hero" hidden>
+      <div class="hero-media"><video id="heroVideo" muted loop playsinline disablepictureinpicture></video></div>
+      <div class="hero-shade"></div>
+      <div class="hero-content">
+        <span class="hero-badge"></span>
+        <h1 class="hero-title" id="heroTitle"></h1>
+        <div class="hero-tags" id="heroTags"></div>
+        <p class="hero-desc" id="heroDesc"></p>
+        <div class="hero-meta" id="heroMeta"></div>
+        <div class="hero-actions">
+          <a class="btn-watch" id="heroWatch" href="#"></a>
+          <button class="btn-icon" id="heroMute" type="button"></button>
+        </div>
+      </div>
+      <button class="hero-arrow left" id="heroPrev" type="button" aria-label="Previous video" hidden></button>
+      <button class="hero-arrow right" id="heroNext" type="button" aria-label="Next video" hidden></button>
+      <div class="hero-thumbs" id="heroThumbs"></div>
+    </section>
+    <div class="rails" id="rails" hidden></div>
+
+    <!-- Search, tag results and rankings -->
+    <section class="page" id="searchView" hidden>
+      <h1 class="page-title" id="searchTitle"></h1>
+      <div class="search-wrap">
+        <label class="search-box">
+          <span id="searchIcon"></span>
+          <input id="search" type="search" data-t-placeholder="Search videos, tags and more" data-t-aria="Search videos"
+                 autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="suggest" aria-expanded="false">
+        </label>
+        <ul class="suggest" id="suggest" role="listbox" hidden></ul>
+      </div>
+      <div class="popular" id="popular" hidden></div>
+
+      <div class="filters">
+        <label class="filter"><span data-t="Sort by">Sort by</span>
+          <select id="sort">
+            <option value="relevance" data-t="Best match">Best match</option>
+            <option value="newest" data-t="Newest">Newest</option>
+            <option value="views" data-t="Most viewed">Most viewed</option>
+            <option value="rating" data-t="Top rated">Top rated</option>
+            <option value="longest" data-t="Longest">Longest</option>
+            <option value="shortest" data-t="Shortest">Shortest</option>
+            <option value="oldest" data-t="Oldest">Oldest</option>
+          </select>
+        </label>
+        <label class="filter"><span data-t="Duration">Duration</span>
+          <select id="dur">
+            <option value="" data-t="Any length">Any length</option>
+            <option value="short" data-t="Under 1 minute">Under 1 minute</option>
+            <option value="medium" data-t="1 to 5 minutes">1 to 5 minutes</option>
+            <option value="long" data-t="5 to 20 minutes">5 to 20 minutes</option>
+            <option value="xlong" data-t="Over 20 minutes">Over 20 minutes</option>
+          </select>
+        </label>
+        <label class="filter"><span data-t="Uploaded">Uploaded</span>
+          <select id="date">
+            <option value="" data-t="Any time">Any time</option>
+            <option value="1" data-t="Today">Today</option>
+            <option value="7" data-t="This week">This week</option>
+            <option value="30" data-t="This month">This month</option>
+            <option value="365" data-t="This year">This year</option>
+          </select>
+        </label>
+        <label class="filter-check"><input type="checkbox" id="hd"> <span data-t="HD only">HD only</span></label>
+        <button class="filter-reset" id="resetFilters" type="button" data-t="Clear filters" hidden>Clear filters</button>
+      </div>
+
+      <div class="chips" id="chips"></div>
+      <p class="result-info" id="info"></p>
+      <div class="tile-grid" id="results"></div>
+      <div class="sentinel" id="sentinel"></div>
+      <p class="empty" id="empty" hidden></p>
+    </section>
+
+    <p class="empty" id="loadError" hidden data-t="Could not load videos.">Could not load videos.</p>
+  </div>
+
+  <script src="/i18n.js"></script>
+  <script src="/common.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const params = new URLSearchParams(location.search);
+    const view = (params.get('view') === 'search' || params.has('q') || params.has('tag') || params.has('sort')) ? 'search' : 'home';
+    const activeNav = view;
+    renderSidebar(activeNav);
+    translatePage();
+    applySiteName();
+
+    // ---------- Home ----------
+    async function buildHome(all) {
+      if (!all.length) {
+        $('rails').hidden = false;
+        $('rails').classList.add('no-hero');
+        $('rails').replaceChildren(el('p', { class: 'empty' }, 'No videos yet. Check back soon.'));
+        return;
+      }
+      // Banner: the videos you picked on /admin, in your order; otherwise the 5 newest.
+      const { ids } = await getJSON('/api/featured').catch(() => ({ ids: [] }));
+      const byId = new Map(all.map((v) => [v.id, v]));
+      const picked = ids.map((id) => byId.get(id)).filter(Boolean);
+      setupHero(picked.length ? picked : all.slice(0, 5), 'FEATURED');
+      await auth.ready; // Continue Watching needs to know who is signed in
+
+      const rows = [];
+      const continuing = watchHistory.inProgress(all);
+      if (continuing.length) rows.push(rail('Continue Watching', continuing.slice(0, 20).map(tile)));
+
+      rows.push(topTenRow([...all].sort(SORTS.views).slice(0, 10)));
+      rows.push(allVideos(all));
+      rows.forEach(reveal);
+      $('rails').replaceChildren(...rows);
+      $('rails').hidden = false;
+    }
+
+    // ---------- Top 10: one row, with a big rank number beside each video ----------
+    function topTenRow(list) {
+      const row = rail('Top 10 Most Viewed', list.map((v, i) =>
+        el('div', { class: 'top10-item' }, el('span', { class: 'rank', 'aria-hidden': 'true' }, String(i + 1)), tile(v))));
+      row.classList.add('top10');
+      return row;
+    }
+
+    // Banner depth: background, text and thumbnails drift at different speeds with the mouse and scroll.
+    function heroParallax() {
+      if (!can3D) return;
+      const hero = $('hero');
+      let frame = 0, mx = 0, my = 0;
+      const apply = () => {
+        frame = 0;
+        const sy = Math.min(window.scrollY, hero.offsetHeight);
+        hero.style.setProperty('--px', mx.toFixed(3));
+        hero.style.setProperty('--py', my.toFixed(3));
+        hero.style.setProperty('--sy', (sy * 0.35).toFixed(1) + 'px');
+        hero.style.setProperty('--fade', Math.max(0, 1 - sy / (hero.offsetHeight * 0.75)).toFixed(3));
+      };
+      const queue = () => { if (!frame) frame = requestAnimationFrame(apply); };
+      hero.addEventListener('pointermove', (e) => {
+        const r = hero.getBoundingClientRect();
+        mx = (e.clientX - r.left) / r.width - 0.5;
+        my = (e.clientY - r.top) / r.height - 0.5;
+        queue();
+      });
+      hero.addEventListener('pointerleave', () => { mx = my = 0; queue(); });
+      window.addEventListener('scroll', queue, { passive: true });
+    }
+
+    // Every video in a grid, 24 per page, with numbered pages and a Newest / Most viewed switch.
+    // The page and order live in the address (?p=2&o=views) so Back and shared links work.
+    function allVideos(all) {
+      const PER_PAGE = 24;
+      const grid = el('div', { class: 'tile-grid' });
+      const pager = el('nav', { class: 'pager', 'aria-label': 'Pages' });
+      const summary = el('p', { class: 'pager-summary' });
+      const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'Sort videos' });
+      const head = el('div', { class: 'rail-head' }, el('h2', {}, 'All Videos'), seg);
+      const section = el('section', { class: 'rail home-all', id: 'all-videos' }, head, grid, el('div', { class: 'pager-bar' }, summary, pager));
+      const orders = [['newest', 'Newest'], ['views', 'Most viewed']];
+
+      function readState() {
+        const p = new URLSearchParams(location.search);
+        const order = p.get('o') === 'views' ? 'views' : 'newest';
+        const pages = Math.max(1, Math.ceil(all.length / PER_PAGE));
+        const page = Math.min(pages, Math.max(1, parseInt(p.get('p'), 10) || 1));
+        return { order, page, pages };
+      }
+      function goTo(page, order, scroll) {
+        const p = new URLSearchParams();
+        if (page > 1) p.set('p', page);
+        if (order !== 'newest') p.set('o', order);
+        history.pushState(null, '', p.toString() ? '?' + p : '/');
+        render();
+        if (scroll) head.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'start' });
+      }
+
+      // Page numbers with gaps, e.g. 1 … 4 5 6 … 12
+      function pageList(page, pages) {
+        const keep = new Set([1, pages, page - 1, page, page + 1]);
+        if (page <= 3) [2, 3, 4].forEach((n) => keep.add(n));
+        if (page >= pages - 2) [pages - 1, pages - 2, pages - 3].forEach((n) => keep.add(n));
+        const nums = [...keep].filter((n) => n >= 1 && n <= pages).sort((a, b) => a - b);
+        const out = [];
+        nums.forEach((n, i) => { if (i && n - nums[i - 1] > 1) out.push('…'); out.push(n); });
+        return out;
+      }
+
+      function render() {
+        const { order, page, pages } = readState();
+        seg.replaceChildren(...orders.map(([key, label]) => {
+          const b = el('button', { type: 'button', class: key === order ? 'active' : '', 'aria-pressed': String(key === order) }, label);
+          b.onclick = () => { if (key !== order) goTo(1, key, false); };
+          return b;
+        }));
+
+        const sorted = [...all].sort(SORTS[order]);
+        const from = (page - 1) * PER_PAGE;
+        grid.replaceChildren(...sorted.slice(from, from + PER_PAGE).map(tile));
+        summary.textContent = `Showing ${from + 1}–${Math.min(from + PER_PAGE, all.length)} of ${all.length} videos`;
+
+        const btn = (label, target, opts = {}) => {
+          const b = el('button', { type: 'button', class: 'pager-btn' + (opts.cls ? ' ' + opts.cls : ''), ...(opts.attrs || {}) }, label);
+          if (opts.disabled) b.disabled = true;
+          else b.onclick = () => goTo(target, order, true);
+          return b;
+        };
+        pager.replaceChildren(
+          btn('‹ Previous', page - 1, { cls: 'wide', disabled: page === 1, attrs: { 'aria-label': 'Previous page' } }),
+          ...pageList(page, pages).map((n) => n === '…'
+            ? el('span', { class: 'pager-gap', 'aria-hidden': 'true' }, '…')
+            : btn(String(n), n, { cls: n === page ? 'current' : '', attrs: { 'aria-label': 'Page ' + n, ...(n === page ? { 'aria-current': 'page' } : {}) } })),
+          btn('Next ›', page + 1, { cls: 'wide', disabled: page === pages, attrs: { 'aria-label': 'Next page' } }));
+        pager.hidden = pages === 1;
+      }
+
+      window.addEventListener('popstate', render);
+      render();
+      // Opened from a link to page 2+? Jump straight to the list.
+      if (readState().page > 1) requestAnimationFrame(() => head.scrollIntoView({ block: 'start' }));
+      return section;
+    }
+
+    function setupHero(list, badge) {
+      const PREVIEW_SECONDS = 20; // each banner video loops only its first 20 seconds
+      const SWITCH_EVERY_MS = 9000;
+      const video = $('heroVideo');
+      video.preload = 'metadata';
+      let index = 0, timer = null;
+      let inView = true, hovering = false;
+      // The banner only plays while someone can actually see it.
+      const active = () => inView && document.visibilityState === 'visible';
+
+      $('heroWatch').replaceChildren(icon('play'), t('Watch Now'));
+      document.querySelector('.hero-badge').textContent = badge;
+
+      // One small dot per banner video (the current one is a longer lime bar), plus arrows on the sides.
+      const thumbs = list.map((v, i) => {
+        const b = el('button', { class: 'hero-thumb', type: 'button', 'aria-label': v.title });
+        b.onclick = () => { show(i); restart(); };
+        return b;
+      });
+      $('heroThumbs').replaceChildren(...(list.length > 1 ? thumbs : []));
+      if (list.length > 1) {
+        $('heroPrev').replaceChildren(icon('chevL'));
+        $('heroNext').replaceChildren(icon('chevR'));
+        $('heroPrev').onclick = () => { show((index - 1 + list.length) % list.length); restart(); };
+        $('heroNext').onclick = () => { show((index + 1) % list.length); restart(); };
+        $('heroPrev').hidden = $('heroNext').hidden = false;
+      }
+
+      function show(i) {
+        index = i;
+        const v = list[i];
+        video.classList.remove('ready');
+        if (v.poster) video.poster = v.poster;
+        video.src = heroSrc(v);
+        if (active()) video.play().catch(() => {});
+        $('heroTitle').textContent = v.title;
+        $('heroMeta').replaceChildren(...metaLine(v));
+        $('heroDesc').textContent = v.description;
+        $('heroDesc').hidden = !v.description;
+        $('heroTags').replaceChildren(...['Video', ...v.tags.slice(0, 3).map(capitalize)].map((x) => el('span', {}, x)));
+        $('heroWatch').href = '/watch?v=' + encodeURIComponent(v.id);
+        thumbs.forEach((tb, k) => tb.classList.toggle('active', k === i));
+      }
+      // Move to the next video every few seconds, but not while hovered or out of sight.
+      function restart() {
+        clearInterval(timer);
+        if (list.length > 1 && !hovering && active()) timer = setInterval(() => show((index + 1) % list.length), SWITCH_EVERY_MS);
+      }
+      function syncPlayback() {
+        if (active()) { video.play().catch(() => {}); restart(); }
+        else { video.pause(); clearInterval(timer); }
+      }
+
+      // Short preview: jump back to the start after 20 seconds.
+      video.addEventListener('timeupdate', () => {
+        if (video.currentTime >= PREVIEW_SECONDS) video.currentTime = 0;
+      });
+      video.addEventListener('loadeddata', () => video.classList.add('ready'));
+
+      // Pause when scrolled out of view, or when the tab is hidden / minimised.
+      new IntersectionObserver((entries) => {
+        inView = entries[0].isIntersecting;
+        syncPlayback();
+      }, { threshold: 0.25 }).observe($('hero'));
+      document.addEventListener('visibilitychange', syncPlayback);
+
+      const mute = $('heroMute');
+      const syncMute = () => {
+        mute.replaceChildren(icon(video.muted ? 'volOff' : 'volOn'));
+        mute.setAttribute('aria-label', t(video.muted ? 'Unmute' : 'Mute'));
+      };
+      mute.onclick = () => { video.muted = !video.muted; syncMute(); };
+      syncMute();
+
+      $('hero').addEventListener('mouseenter', () => { hovering = true; clearInterval(timer); });
+      $('hero').addEventListener('mouseleave', () => { hovering = false; restart(); });
+      $('hero').hidden = false;
+      heroParallax();
+      show(0);
+      restart();
+    }
+
+    // ---------- Search ----------
+    const PAGE_SIZE = 30;
+    const DURATIONS = { short: [0, 60], medium: [60, 300], long: [300, 1200], xlong: [1200, Infinity] };
+
+    function buildSearch(all) {
+      $('searchView').hidden = false;
+      $('searchIcon').replaceChildren(icon('search'));
+      const input = $('search');
+      const state = {
+        q: params.get('q') || '',
+        tag: params.get('tag') || '',
+        sort: params.get('sort') || '',
+        dur: params.get('dur') || '',
+        date: params.get('date') || '',
+        hd: params.get('hd') === '1',
+      };
+      input.value = state.q;
+      $('dur').value = state.dur; $('date').value = state.date; $('hd').checked = state.hd;
+
+      const haystack = (v) => (v.title + ' ' + v.description + ' ' + v.tags.join(' ')).toLowerCase();
+      function relevance(v, words) {
+        const title = v.title.toLowerCase();
+        let s = 0;
+        for (const w of words) {
+          const word = w.replace(/^#/, '');
+          if (v.tags.includes(word)) s += 3;
+          if (title.includes(word)) s += 2;
+          else if (v.description.toLowerCase().includes(word)) s += 1;
+        }
+        if (words.length > 1 && title.includes(words.join(' '))) s += 3;
+        return s;
+      }
+
+      let results = [], shown = 0;
+      function update(fromTyping) {
+        state.q = input.value.trim().toLowerCase();
+        const words = state.q.split(/\s+/).filter(Boolean);
+        const sort = state.sort || (words.length ? 'relevance' : 'newest');
+        $('sort').value = sort;
+
+        results = all.filter((v) => {
+          if (state.tag && !v.tags.includes(state.tag)) return false;
+          if (words.length) {
+            const hay = haystack(v);
+            if (!words.every((w) => (w.startsWith('#') ? v.tags.includes(w.slice(1)) : hay.includes(w)))) return false;
+          }
+          if (state.dur) {
+            const [min, max] = DURATIONS[state.dur];
+            if (!(v.duration >= min && v.duration < max)) return false;
+          }
+          if (state.date && ageDays(v) > Number(state.date)) return false;
+          if (state.hd && topHeight(v) < 720) return false;
+          return true;
+        });
+        if (sort === 'relevance' && words.length) {
+          results = results.map((v) => ({ v, s: relevance(v, words) })).sort((a, b) => b.s - a.s || SORTS.newest(a.v, b.v)).map((o) => o.v);
+        } else {
+          results.sort(SORTS[sort] || SORTS.newest);
+        }
+
+        // Keep the URL in sync so any view can be shared or bookmarked.
+        const p = new URLSearchParams();
+        for (const k of ['q', 'tag', 'sort', 'dur', 'date']) if (state[k]) p.set(k, state[k]);
+        if (state.hd) p.set('hd', '1');
+        if (![...p.keys()].length) p.set('view', 'search');
+        history.replaceState(null, '', '?' + p);
+
+        const titles = { views: 'Most Viewed', rating: 'Top Rated' };
+        $('searchTitle').textContent = state.tag ? capitalize(state.tag) : (!state.q && titles[state.sort]) || t('Search');
+        const filtered = state.dur || state.date || state.hd;
+        $('resetFilters').hidden = !filtered;
+
+        renderChips();
+        $('results').replaceChildren();
+        shown = 0;
+        showMore();
+        const n = results.length;
+        $('info').textContent = t(n === 1 ? '{n} video' : '{n} videos', { n }) +
+          (state.tag ? ' · ' + t('in "{tag}"', { tag: state.tag }) : '') +
+          (state.q ? ' · ' + t('matching "{q}"', { q: state.q }) : '');
+        $('empty').hidden = n > 0;
+        $('empty').textContent = all.length ? t('No videos match. Try another search or fewer filters.') : t('No videos yet. Check back soon.');
+        $('popular').hidden = !!state.q || !popular.length;
+        if (fromTyping) scheduleSearchLog();
+      }
+
+      // Load results in pages as you scroll.
+      function showMore() {
+        const next = results.slice(shown, shown + PAGE_SIZE);
+        $('results').append(...next.map(tile));
+        shown += next.length;
+      }
+      new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting && shown < results.length) showMore();
+      }, { rootMargin: '600px' }).observe($('sentinel'));
+
+      function renderChips() {
+        $('chips').replaceChildren(...[['', t('All')], ...tagCounts(all).map(([tg]) => [tg, tg])].map(([tg, label]) => {
+          const b = el('button', { class: 'chip' + (tg === state.tag ? ' active' : ''), type: 'button' }, label);
+          b.onclick = () => { state.tag = tg === state.tag ? '' : tg; update(); };
+          return b;
+        }));
+      }
+
+      $('sort').onchange = () => { state.sort = $('sort').value; update(); };
+      $('dur').onchange = () => { state.dur = $('dur').value; update(); };
+      $('date').onchange = () => { state.date = $('date').value; update(); };
+      $('hd').onchange = () => { state.hd = $('hd').checked; update(); };
+      $('resetFilters').onclick = () => {
+        state.dur = state.date = ''; state.hd = false;
+        $('dur').value = ''; $('date').value = ''; $('hd').checked = false;
+        update();
+      };
+
+      // ---------- Popular searches ----------
+      let popular = [];
+      getJSON('/api/searches/popular').then((list) => {
+        popular = list;
+        $('popular').replaceChildren(el('span', { class: 'popular-label' }, t('Popular searches:')),
+          ...list.map((q) => {
+            const b = el('button', { class: 'chip small', type: 'button' }, q);
+            b.onclick = () => { input.value = q; update(true); };
+            return b;
+          }));
+        $('popular').hidden = !!state.q || !list.length;
+      }).catch(() => {});
+
+      // Count a search once the visitor stops typing and it found something.
+      let logTimer;
+      function scheduleSearchLog() {
+        clearTimeout(logTimer);
+        logTimer = setTimeout(() => {
+          if (state.q.length >= 2 && results.length) {
+            fetch('/api/searches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ q: state.q }) }).catch(() => {});
+          }
+        }, 2000);
+      }
+
+      // ---------- Suggestions while typing ----------
+      const box = $('suggest');
+      let active = -1, items = [];
+      function closeSuggest() { box.hidden = true; input.setAttribute('aria-expanded', 'false'); active = -1; }
+      function renderSuggest() {
+        const q = input.value.trim().toLowerCase().replace(/^#/, '');
+        if (!q) return closeSuggest();
+        const tags = tagCounts(all).filter(([tg]) => tg.startsWith(q) || tg.includes(' ' + q)).slice(0, 3)
+          .map(([tg, c]) => ({ kind: 'tag', value: tg, label: '#' + tg, extra: t(c === 1 ? '{n} video' : '{n} videos', { n: c }) }));
+        const titles = all.filter((v) => v.title.toLowerCase().includes(q)).slice(0, 6)
+          .map((v) => ({ kind: 'video', value: v.id, label: v.title, extra: formatDuration(v.duration) }));
+        items = [...tags, ...titles];
+        if (!items.length) return closeSuggest();
+        box.replaceChildren(...items.map((it, i) => {
+          const li = el('li', { role: 'option', id: 'sg' + i, class: 'suggest-item' + (i === active ? ' active' : '') },
+            icon(it.kind === 'tag' ? 'grid' : 'search'), el('span', { class: 'sg-label' }, it.label), el('span', { class: 'sg-extra' }, it.extra));
+          li.onmousedown = (e) => { e.preventDefault(); pick(it); };
+          return li;
+        }));
+        box.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+      }
+      function pick(it) {
+        closeSuggest();
+        if (it.kind === 'video') { location.href = '/watch?v=' + encodeURIComponent(it.value); return; }
+        input.value = '';
+        state.tag = it.value;
+        update();
+      }
+      input.addEventListener('input', () => { active = -1; renderSuggest(); update(true); });
+      input.addEventListener('keydown', (e) => {
+        if (box.hidden) return;
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          active = (active + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+          renderSuggest();
+          input.setAttribute('aria-activedescendant', 'sg' + active);
+        } else if (e.key === 'Enter' && active >= 0) {
+          e.preventDefault();
+          pick(items[active]);
+        } else if (e.key === 'Escape') {
+          closeSuggest();
+        }
+      });
+      input.addEventListener('blur', closeSuggest);
+
+      update();
+      if (!state.tag && !state.sort) input.focus();
+    }
+
+    getJSON('/api/videos')
+      .then((all) => ({ home: buildHome, search: buildSearch })[view](all))
+      .catch((e) => { console.error(e); $('loadError').hidden = false; });
+  </script>
+</body>
+</html>

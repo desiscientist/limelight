@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video</title>
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="embed">
+  <div class="ph-player" id="vp">
+    <video id="player" playsinline disablepictureinpicture preload="metadata"></video>
+    <a class="embed-title" id="title" target="_blank" rel="noopener"></a>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+  <script src="/i18n.js"></script>
+  <script src="/common.js"></script>
+  <script src="/player.js"></script>
+  <script>
+    (async () => {
+      const id = decodeURIComponent(location.pathname.split('/').pop());
+      const box = document.getElementById('vp');
+      try {
+        const v = await getJSON('/api/videos/' + encodeURIComponent(id));
+        document.title = v.title;
+        const title = document.getElementById('title');
+        title.textContent = v.title;
+        title.href = '/watch?v=' + encodeURIComponent(v.id);
+        const player = createPlayer(box, document.getElementById('player'), {
+          v, startAt: Number(new URLSearchParams(location.search).get('t')) || 0,
+        });
+        player.video.addEventListener('play', () => fetch(`/api/videos/${encodeURIComponent(v.id)}/view`, { method: 'POST' }).catch(() => {}), { once: true });
+      } catch {
+        box.replaceChildren(el('p', { class: 'embed-missing' }, t('This video is not available.')));
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Videos</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="ph">
+  <div class="app tv-page" id="app">
+    <div id="wrap">
+      <!-- Player, full width under the top bar -->
+      <section class="tv-stage">
+        <div class="ph-player" id="vp">
+          <video id="player" playsinline disablepictureinpicture preload="metadata"></video>
+        </div>
+      </section>
+
+      <!-- Title block -->
+      <section class="tv-detail">
+        <div class="tv-info">
+          <div class="tv-kicker" id="kicker"></div>
+          <h1 class="ph-title" id="title"></h1>
+          <p class="ph-desc" id="desc" hidden></p>
+          <div class="tv-meta" id="uploaded"></div>
+          <div class="ph-buttons">
+            <button class="ph-btn" id="likeBtn" type="button" data-t-aria="I like this"></button>
+            <button class="ph-btn" id="dislikeBtn" type="button" data-t-aria="I dislike this"></button>
+            <button class="ph-btn round" id="shareBtn" type="button"></button>
+            <button class="ph-btn round" id="reportBtn" type="button"></button>
+          </div>
+        </div>
+        <aside class="tv-score">
+          <div class="ph-views"><span id="views">0</span> <small id="viewsLabel">views</small></div>
+          <div class="ph-rating">
+            <div class="ph-percent" id="percent"></div>
+            <div class="ph-ratingbar"><div id="ratingFill"></div></div>
+          </div>
+        </aside>
+      </section>
+    </div>
+
+    <!-- Rows -->
+    <div id="side"></div>
+    <label class="ph-autoplay" id="autoplayLabel">
+      <span data-t="Autoplay">Autoplay</span>
+      <button class="switch" id="autoplaySwitch" type="button" role="switch" data-t-aria="Autoplay next video"></button>
+    </label>
+    <div id="relatedSection" hidden><div id="related"></div></div>
+
+    <section class="comments tv-section" id="comments">
+      <h2 class="tv-h" id="commentsTitle">Comments</h2>
+      <div id="commentBox"></div>
+      <ul class="comment-list" id="commentList"></ul>
+    </section>
+
+    <!-- About -->
+    <section class="tv-about tv-section" id="about">
+      <h2 class="tv-h" data-t="About">About</h2>
+      <dl class="tv-facts" id="facts"></dl>
+      <div class="ph-cats" id="catsRow" hidden>
+        <span class="ph-label" data-t="Categories">Categories</span>
+        <span class="ph-pills" id="tags"></span>
+      </div>
+    </section>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+  <script src="/i18n.js"></script>
+  <script src="/common.js"></script>
+  <script src="/player.js"></script>
+  <script>
+    renderSidebar('');
+    translatePage();
+    const $ = (id) => document.getElementById(id);
+
+    function shareDialog(v, player) {
+      const base = location.origin + '/watch?v=' + encodeURIComponent(v.id);
+      const now = Math.floor(player.video.currentTime || 0);
+      const link = el('input', { type: 'text', readonly: '', class: 'share-link' });
+      const atBox = el('input', { type: 'checkbox' });
+      const embed = el('textarea', { readonly: '', class: 'share-embed', rows: '3' });
+      const url = () => base + (atBox.checked && now ? '&t=' + now : '');
+      const social = el('div', { class: 'share-social' });
+      function refresh() {
+        link.value = url();
+        const u = encodeURIComponent(url()), title = encodeURIComponent(v.title);
+        const targets = [
+          ['WhatsApp', `https://wa.me/?text=${title}%20${u}`, '#25d366'],
+          ['X', `https://twitter.com/intent/tweet?url=${u}&text=${title}`, '#000000'],
+          ['Facebook', `https://www.facebook.com/sharer/sharer.php?u=${u}`, '#1877f2'],
+          ['Reddit', `https://www.reddit.com/submit?url=${u}&title=${title}`, '#ff4500'],
+          ['Telegram', `https://t.me/share/url?url=${u}&text=${title}`, '#229ed9'],
+        ];
+        social.replaceChildren(
+          ...targets.map(([name, href, color]) => el('a', { class: 'share-target', href, target: '_blank', rel: 'noopener noreferrer', style: `--c:${color}` },
+            el('span', { class: 'share-dot' }, name[0]), name)),
+          el('a', { class: 'share-target', href: `mailto:?subject=${title}&body=${u}`, style: '--c:#6b7280' }, el('span', { class: 'share-dot' }, icon('mail')), t('Email')));
+        embed.value = `<iframe src="${location.origin}/embed/${encodeURIComponent(v.id)}${atBox.checked && now ? '?t=' + now : ''}" width="640" height="360" frameborder="0" allow="autoplay; fullscreen" allowfullscreen></iframe>`;
+      }
+      atBox.onchange = refresh;
+      refresh();
+
+      const copyBtn = (getText, label) => {
+        const b = el('button', { class: 'btn', type: 'button' }, icon('copy'), label);
+        b.onclick = async () => {
+          b.replaceChildren(icon('copy'), t((await copyText(getText())) ? 'Copied!' : 'Copy failed'));
+          setTimeout(() => b.replaceChildren(icon('copy'), label), 2000);
+        };
+        return b;
+      };
+      const body = el('div', { class: 'share' },
+        social,
+        el('div', { class: 'share-row' }, link, copyBtn(() => link.value, t('Copy'))),
+        ...(now ? [el('label', { class: 'check' }, atBox, t('Start at {time}', { time: formatDuration(now) }))] : []),
+        el('h3', { class: 'share-sub' }, icon('code'), t('Embed on a website')),
+        embed,
+        el('div', { class: 'share-row end' }, copyBtn(() => embed.value, t('Copy embed code'))));
+      if (navigator.share) {
+        const native = el('button', { class: 'btn secondary', type: 'button' }, icon('share'), t('More options'));
+        native.onclick = () => navigator.share({ title: v.title, url: url() }).catch(() => {});
+        body.querySelector('.share-row.end').prepend(native);
+      }
+      openModal(t('Share'), body);
+    }
+
+    function reportDialog(v) {
+      const reasons = [
+        ['broken', t('Video does not play')],
+        ['wrong-info', t('Wrong title, description or tags')],
+        ['inappropriate', t('Inappropriate content')],
+        ['copyright', t('Copyright problem')],
+        ['other', t('Something else')],
+      ];
+      const list = el('div', { class: 'report-reasons' }, ...reasons.map(([value, label], i) =>
+        el('label', { class: 'radio' }, Object.assign(el('input', { type: 'radio', name: 'reason', value }), { checked: i === 0 }), label)));
+      const msg = el('textarea', { rows: '3', maxlength: '1000', placeholder: t('Add details (optional)') });
+      const status = el('p', { class: 'status' });
+      const send = el('button', { class: 'btn', type: 'submit' }, t('Send report'));
+      const form = el('form', { class: 'report' }, list, msg, status, el('div', { class: 'share-row end' }, send));
+      const close = openModal(t('Report a problem'), form);
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        send.disabled = true;
+        const reason = form.querySelector('input[name=reason]:checked').value;
+        const res = await fetch(`/api/videos/${encodeURIComponent(v.id)}/report`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason, message: msg.value }),
+        }).catch(() => null);
+        if (res && res.ok) { close(); toast(t('Thanks! Your report was sent.')); }
+        else { send.disabled = false; status.textContent = t('Could not send the report. Please try again later.'); status.classList.add('error'); }
+      };
+    }
+
+    // ---------- Comments (anyone can read; signed-in viewers can write) ----------
+    async function setupComments(v) {
+      let comments = await getJSON('/api/videos/' + encodeURIComponent(v.id) + '/comments').catch(() => []);
+      const title = () => { $('commentsTitle').textContent = comments.length ? `Comments (${comments.length.toLocaleString()})` : 'Comments'; };
+
+      function commentItem(c) {
+        const li = el('li', { class: 'comment' },
+          el('span', { class: 'avatar' }, (c.name[0] || '?').toUpperCase()),
+          el('div', { class: 'comment-body' },
+            el('div', { class: 'comment-head' }, el('strong', {}, c.name), el('span', { class: 'meta' }, timeAgo(c.createdAt)),
+              ...(c.mine ? [el('span', { class: 'you' }, 'You')] : [])),
+            el('p', { class: 'comment-text' }, c.text)));
+        if (c.canDelete) {
+          const del = el('button', { class: 'comment-del', type: 'button', 'aria-label': 'Delete comment', title: 'Delete comment' }, icon('close'));
+          del.onclick = async () => {
+            if (!confirm('Delete this comment?')) return;
+            const res = await fetch('/api/comments/' + c.id, { method: 'DELETE' });
+            if (res.ok) { comments = comments.filter((x) => x.id !== c.id); render(); }
+          };
+          li.append(del);
+        }
+        return li;
+      }
+      function render() {
+        title();
+        $('commentList').replaceChildren(...comments.map(commentItem));
+        if (!comments.length) $('commentList').append(el('li', { class: 'meta no-comments' }, 'No comments yet. Be the first!'));
+      }
+
+      if (auth.user) {
+        const text = el('textarea', { rows: '2', maxlength: '2000', placeholder: 'Add a comment...', 'aria-label': 'Add a comment' });
+        const post = el('button', { class: 'btn', type: 'submit', disabled: '' }, 'Comment');
+        const cancel = el('button', { class: 'btn secondary', type: 'button' }, 'Cancel');
+        const status = el('p', { class: 'status error' });
+        const actions = el('div', { class: 'comment-actions', hidden: '' }, cancel, post);
+        const form = el('form', { class: 'comment-form' },
+          el('span', { class: 'avatar' }, auth.user.name[0].toUpperCase()),
+          el('div', { class: 'comment-input' }, text, status, actions));
+        text.addEventListener('focus', () => { actions.hidden = false; });
+        text.addEventListener('input', () => { post.disabled = !text.value.trim(); });
+        cancel.onclick = () => { text.value = ''; post.disabled = true; actions.hidden = true; status.textContent = ''; };
+        form.onsubmit = async (e) => {
+          e.preventDefault();
+          post.disabled = true;
+          status.textContent = '';
+          const res = await fetch('/api/videos/' + encodeURIComponent(v.id) + '/comments', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text.value }),
+          }).catch(() => null);
+          const data = res ? await res.json().catch(() => ({})) : {};
+          if (res && res.ok) { comments.unshift(data); render(); cancel.onclick(); }
+          else { status.textContent = data.error || 'Could not post your comment. Try again.'; post.disabled = false; }
+        };
+        $('commentBox').replaceChildren(form);
+      } else {
+        const signIn = el('button', { class: 'btn', type: 'button' }, icon('user'), 'Sign in to comment');
+        signIn.onclick = () => openAuthDialog('signin');
+        const signUp = el('button', { class: 'link-btn', type: 'button' }, 'create a free account');
+        signUp.onclick = () => openAuthDialog('signup');
+        $('commentBox').replaceChildren(el('div', { class: 'comment-signin' }, signIn, el('span', { class: 'meta' }, 'or ', signUp)));
+      }
+      render();
+    }
+
+    (async () => {
+      const siteName = await applySiteName();
+      const params = new URLSearchParams(location.search);
+      const id = params.get('v');
+      let v;
+      try {
+        v = await getJSON('/api/videos/' + encodeURIComponent(id));
+      } catch {
+        $('app').replaceChildren(el('div', { class: 'page' },
+          el('p', { class: 'empty' }, t('This video does not exist.') + ' ', el('a', { href: '/', class: 'link' }, t('Go back home')))));
+        return;
+      }
+      document.title = v.title + (siteName ? ' - ' + siteName : '');
+
+      // Other videos, best matches first (shared tags), used for "Up next" and autoplay.
+      const allPromise = getJSON('/api/videos').catch(() => []);
+      let ranked = [];
+
+      await auth.ready;
+      // Start time: ?t= in the link wins, otherwise resume where a signed-in viewer left off.
+      const linkTime = Number(params.get('t')) || 0;
+      const saved = watchHistory.position(v.id);
+      const resumeAt = !linkTime && saved && saved.t >= 3 ? saved.t : 0;
+
+      const player = createPlayer($('vp'), $('player'), {
+        v,
+        startAt: linkTime || resumeAt,
+        onTheater: () => setTheater(!$('wrap').classList.contains('theater')),
+        getNext: () => ranked[0],
+      });
+      if (resumeAt) {
+        toast(t('Resuming from {time}', { time: formatDuration(resumeAt) }), [[t('Start over'), () => { player.video.currentTime = 0; }]]);
+      }
+
+      function setTheater(on) {
+        $('wrap').classList.toggle('theater', on);
+        player.setTheater(on);
+        store.set('theater', on ? '1' : '0');
+      }
+      setTheater(store.get('theater') === '1');
+
+      // Autoplay switch next to "Up next" (same setting as in the player menu).
+      const sw = $('autoplaySwitch');
+      const syncSwitch = (on) => { sw.classList.toggle('on', on); sw.setAttribute('aria-checked', String(on)); };
+      sw.onclick = () => player.setAutoplay(!player.autoplay);
+      player.onAutoplayChange(syncSwitch);
+      syncSwitch(player.autoplay);
+
+      // Count one view the first time the video starts playing.
+      player.video.addEventListener('play', async () => {
+        try {
+          const r = await (await fetch(`/api/videos/${encodeURIComponent(v.id)}/view`, { method: 'POST' })).json();
+          if (r.counted) showViews(r.views);
+        } catch {}
+      }, { once: true });
+
+      // ---------- Details ----------
+      $('title').textContent = v.title;
+      function showViews(n) {
+        $('views').textContent = fmtCount(n);
+        $('viewsLabel').textContent = t(n === 1 ? 'view' : 'views');
+      }
+      showViews(v.views || 0);
+      // "Video · Tag · Tag" above the title, and "2025 · 12:34 · HD · 3 months ago" under the description.
+      $('kicker').replaceChildren(...['Video', ...v.tags.slice(0, 3).map(capitalize)].map((x) => el('span', {}, x)));
+      const top = topHeight(v);
+      const quality = top >= 2160 ? '4K' : top >= 720 ? 'HD' : top ? top + 'p' : '';
+      $('uploaded').replaceChildren(...metaLine(v), ...(quality ? [el('span', { class: 'dot' }), el('span', { class: 'tv-badge' }, quality)] : []));
+      if (v.description) { $('desc').textContent = v.description; $('desc').hidden = false; }
+      const fact = (label, value) => (value ? [el('dt', {}, label), el('dd', {}, value)] : []);
+      $('facts').replaceChildren(
+        ...[['Uploaded', new Date(v.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })],
+          ['Duration', formatDuration(v.duration)],
+          ['Quality', quality + (v.width ? ` (${v.width}×${v.height})` : '')],
+          ['Views', (v.views || 0).toLocaleString()],
+          ['Released', v.year || ''],
+          // Placeholder posters from Wikimedia Commons: show the licence and link to the original file.
+          ['Poster', v.credit ? el('span', {}, v.credit.license + (v.credit.author ? ' · ' + v.credit.author : '') + ' · ',
+            el('a', { class: 'link', href: v.credit.file, target: '_blank', rel: 'noopener noreferrer' }, 'Source')) : '']]
+          .map(([l, val]) => el('div', { class: 'tv-fact' + (l === 'Poster' ? ' wide' : '') }, ...fact(l, val))));
+      if (v.tags.length) {
+        $('tags').replaceChildren(...v.tags.map((tg) => el('a', { class: 'ph-pill', href: '/?tag=' + encodeURIComponent(tg) }, tg)));
+        $('catsRow').hidden = false;
+      }
+
+      // ---------- Likes / dislikes (signed-in viewers only, one per account) ----------
+      let myVote = v.myVote || 'none';
+      let likes = v.likes || 0, dislikes = v.dislikes || 0;
+      function renderRating() {
+        const pct = ratingPercent({ likes, dislikes });
+        $('percent').replaceChildren(icon('thumbUp'), pct === null ? t('No ratings yet') : pct + '%');
+        $('ratingFill').style.width = (pct || 0) + '%';
+        $('likeBtn').replaceChildren(icon('thumbUp'), fmtCount(likes));
+        $('dislikeBtn').replaceChildren(icon('thumbDown'), fmtCount(dislikes));
+        $('likeBtn').classList.toggle('active', myVote === 'up');
+        $('dislikeBtn').classList.toggle('active', myVote === 'down');
+      }
+      async function vote(dir) {
+        if (!requireSignIn('Create a free account to like or dislike videos.')) return;
+        const to = myVote === dir ? 'none' : dir;
+        try {
+          const res = await fetch(`/api/videos/${encodeURIComponent(v.id)}/vote`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to }),
+          });
+          if (!res.ok) return;
+          const r = await res.json();
+          likes = r.likes; dislikes = r.dislikes; myVote = r.myVote;
+          renderRating();
+        } catch {}
+      }
+      $('likeBtn').onclick = () => vote('up');
+      $('dislikeBtn').onclick = () => vote('down');
+      renderRating();
+
+      $('shareBtn').replaceChildren(icon('share'));
+      $('shareBtn').setAttribute('aria-label', t('Share'));
+      $('shareBtn').title = t('Share');
+      $('shareBtn').onclick = () => shareDialog(v, player);
+      $('reportBtn').replaceChildren(icon('flag'));
+      $('reportBtn').setAttribute('aria-label', t('Report a problem'));
+      $('reportBtn').title = t('Report a problem');
+      $('reportBtn').onclick = () => reportDialog(v);
+
+      setupComments(v);
+
+      // ---------- Up next + related ----------
+      const all = (await allPromise).filter((x) => x.id !== v.id);
+      const shared = (x) => x.tags.filter((tg) => v.tags.includes(tg)).length;
+      ranked = all.map((x, i) => ({ x, s: shared(x), i })).sort((a, b) => b.s - a.s || a.i - b.i).map((o) => o.x);
+      // Two sideways rows, like a title page: what plays next, then more like this.
+      if (ranked.length) {
+        const up = rail(t('Up Next'), ranked.slice(0, 12).map(tile));
+        up.querySelector('.rail-head').append($('autoplayLabel'));
+        $('side').replaceChildren(up);
+      } else {
+        $('autoplayLabel').hidden = true;
+      }
+      const rest = ranked.slice(12, 36);
+      if (rest.length) $('related').replaceChildren(rail(t('More Like This'), rest.map(tile)));
+      $('relatedSection').hidden = rest.length === 0;
+    })();
+  </script>
+</body>
+</html>

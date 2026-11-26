@@ -466,6 +466,94 @@ async function makeFreePosterPlaceholders() {
   return made;
 }
 
+// ---------- Chosen titles from TMDB ----------
+// npm run placeholders:titles -- "Avengers: Doomsday" "Dune: Part Three" --feature
+// Looks each title up on TMDB (newest matching release first), uses its official portrait poster,
+// description, genres and year, and with --feature puts them in the home page banner.
+async function findTmdbMovie(query, genres) {
+  const { results = [] } = await tmdb('/search/movie', { query, include_adult: 'false' });
+  const norm = (s) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const q = norm(query);
+  const candidates = results.filter((x) => x.poster_path && !x.adult);
+  if (!candidates.length) return null;
+  // Prefer an exact title match, then the newest release, then the most popular.
+  const year = (x) => Number((x.release_date || '').slice(0, 4)) || 0;
+  candidates.sort((a, b) => (norm(b.title) === q) - (norm(a.title) === q) || year(b) - year(a) || b.popularity - a.popularity);
+  const x = candidates[0];
+  const names = (x.genre_ids || []).map((id) => genres.get(id)).filter(Boolean);
+  const y = year(x);
+  return {
+    tmdbId: x.id,
+    title: x.title,
+    description: x.overview || '',
+    year: y ? String(y) : null,
+    poster: x.poster_path,
+    tags: [...new Set([...names.flatMap((n) => n.toLowerCase().split(' & ')), ...(y ? [String(y).slice(0, 3) + '0s'] : [])])],
+  };
+}
+
+async function makeTmdbTitlePlaceholders(queries, feature) {
+  if (!TMDB_KEY) throw new Error('This needs a TMDB key. Add TMDB_API_KEY=... to .env (free at themoviedb.org → Settings → API).');
+  const genres = new Map((await tmdb('/genre/movie/list')).genres.map((g) => [g.id, g.name]));
+  const have = new Set(load().filter((v) => v.source === 'tmdb').map((v) => String(v.tmdbId)));
+  const made = [];
+  for (const [i, query] of queries.entries()) {
+    const base = `ph_${crypto.randomUUID()}`;
+    const raw = path.join(os.tmpdir(), `${base}_raw.jpg`);
+    const poster = `${base}_poster.jpg`;
+    const filename = `${base}.mp4`;
+    const dur = Math.round(rand(40, 90));
+    try {
+      const film = await findTmdbMovie(query, genres);
+      if (!film) { console.log(`Not found on TMDB: "${query}"`); continue; }
+      if (have.has(String(film.tmdbId))) { console.log(`Already added: ${film.title}`); continue; }
+      await download('https://image.tmdb.org/t/p/w780' + film.poster, raw);
+      await makeWideArt(raw, path.join(VIDEO_DIR, poster));
+      await makeZoomClip(path.join(VIDEO_DIR, poster), path.join(VIDEO_DIR, filename), dur);
+      made.push({
+        id: crypto.randomBytes(6).toString('base64url'),
+        title: film.title,
+        description: film.description,
+        tags: film.tags,
+        ...fakeStats(),
+        filename,
+        mimetype: 'video/mp4',
+        size: fs.statSync(path.join(VIDEO_DIR, filename)).size,
+        // Newest first, in the order given, so they lead "All Videos".
+        createdAt: new Date(Date.now() - i * 60000).toISOString(),
+        width: 960,
+        height: 540,
+        duration: dur,
+        webFriendly: true,
+        processing: 'done',
+        poster,
+        posterVersion: 1,
+        customPoster: true,
+        placeholder: true,
+        source: 'tmdb',
+        tmdbId: film.tmdbId,
+        tmdbType: 'movie',
+        year: film.year,
+      });
+      console.log(`Added: ${film.title}${film.year ? ` (${film.year})` : ''}`);
+    } catch (e) {
+      fs.rmSync(path.join(VIDEO_DIR, poster), { force: true });
+      fs.rmSync(path.join(VIDEO_DIR, filename), { force: true });
+      console.error(`Skipped "${query}": ${e.message.split('\n')[0]}`);
+    } finally {
+      fs.rmSync(raw, { force: true });
+    }
+  }
+  if (feature && made.length) {
+    const file = path.join(DATA_DIR, 'settings.json');
+    const settings = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+    settings.featured = made.slice(0, 5).map((v) => v.id);
+    fs.writeFileSync(file, JSON.stringify(settings, null, 2));
+    console.log(`Home page banner now shows: ${made.slice(0, 5).map((v) => v.title).join(', ')}`);
+  }
+  return made;
+}
+
 // ---------- Generated placeholders (no TMDB key) ----------
 async function makeGeneratedPlaceholders() {
   const titles = [...TITLES].sort(() => Math.random() - 0.5);
@@ -513,8 +601,11 @@ async function makeGeneratedPlaceholders() {
 }
 
 (async () => {
-  // With a TMDB key: today's movies and shows. Without: free-poster classics. "--plain": generated clips only.
-  const made = TMDB_KEY ? await makeTmdbPlaceholders()
+  // "titles": the films named after it, from TMDB. Otherwise, with a TMDB key: today's movies and shows.
+  // Without: free-poster classics. "--plain": generated clips only.
+  const made = process.argv[2] === 'titles'
+    ? await makeTmdbTitlePlaceholders(process.argv.slice(3).filter((a) => !a.startsWith('--')), process.argv.includes('--feature'))
+    : TMDB_KEY ? await makeTmdbPlaceholders()
     : process.argv.includes('--plain') ? await makeGeneratedPlaceholders()
     : await makeFreePosterPlaceholders();
   const videos = load();

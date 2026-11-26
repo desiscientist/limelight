@@ -1,8 +1,8 @@
 # Limelight
 
-A full-stack video streaming platform in the style of Netflix and Apple TV, built with Node.js, Express and FFmpeg: adaptive HLS streaming, automatic transcoding, a custom video player, viewer accounts, comments and likes.
+A full-stack video streaming platform in the style of Netflix and Apple TV, built with Node.js, Express and FFmpeg: adaptive HLS streaming, automatic transcoding, a custom video player and viewer accounts.
 
-Only the owner can upload. Anyone can watch without an account; viewers who sign up can like/dislike, comment, and get Continue Watching across devices.
+Only the owner can upload. Anyone can watch without an account; viewers who sign up get Continue Watching across devices.
 
 ## Run it
 1. `npm install`
@@ -24,9 +24,8 @@ The admin page shows the progress of each step.
 
 ## Where things are stored
 - `data/videos/`: video files, thumbnails, preview images and streaming chunks
-- `data/videos.json`: titles, descriptions, tags, views, likes, watch heatmaps
+- `data/videos.json`: titles, descriptions, tags, view counts (used for Top 10), watch heatmaps
 - `data/users.json`: viewer accounts and their Continue Watching
-- `data/comments.json`: comments
 - `data/secret.key`: keeps viewers signed in; keep it private and back it up
 - `data/reports.json`: problems reported by viewers
 - `data/searches.json`: popular searches (only searches that found a video)
@@ -35,7 +34,6 @@ Back up the whole `data/` folder.
 
 ## Viewer accounts
 - Sign up with name, email and password (passwords are stored hashed, never in plain text).
-- Accounts are needed to like/dislike (one vote per account) and to comment. Viewers can delete their own comments; you can delete any comment while signed in to /admin.
 - Continue Watching is saved per account on the server.
 - Viewers can change their password from the account menu, and use "Forgot password?" in the sign-in window.
 

@@ -3,7 +3,7 @@ const multer = require('multer');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { probe, plan, transcode, makePoster, makeStoryboard, makeHlsVariant } = require('./media');
+const { probe, plan, transcode, makePoster, makeStoryboard, makeHlsVariant, makeTrailer } = require('./media');
 
 const PORT = Number(process.env.PORT) || 3001;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
@@ -27,7 +27,6 @@ const DB_FILE = path.join(DATA_DIR, 'videos.json');
 const REPORTS_FILE = path.join(DATA_DIR, 'reports.json');
 const SEARCHES_FILE = path.join(DATA_DIR, 'searches.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const COMMENTS_FILE = path.join(DATA_DIR, 'comments.json');
 const SECRET_FILE = path.join(DATA_DIR, 'secret.key');
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const MAX_FEATURED = 5;
@@ -104,6 +103,10 @@ function publicVideo(v, admin = false) {
     tags: v.tags || [],
     year: v.year || null,
     credit: v.credit || null,
+    trailer: v.trailer || null, // { youtube: id, start: seconds }: plays muted in the home page banner
+    // An uploaded trailer file (preferred over YouTube): plays in full in the home page banner.
+    trailerFile: v.trailerFile ? { url: mediaUrl(v.trailerFile.filename) + '?v=' + (v.trailerFile.version || 1), duration: v.trailerFile.duration } : null,
+    trailerStatus: v.trailerStatus || null, // 'processing' or 'failed' while an uploaded trailer is being prepared
     createdAt: v.createdAt,
     size: v.size,
     mimetype: v.mimetype,
@@ -291,15 +294,15 @@ const IMAGE_TYPES = /^image\/(jpeg|png|webp)$/;
 const MAX_THUMB_BYTES = 15 * 1024 * 1024;
 const upload = multer({
   storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, file.fieldname === 'thumbnail' ? TMP_DIR : VIDEO_DIR),
+    destination: (req, file, cb) => cb(null, file.fieldname === 'video' ? VIDEO_DIR : TMP_DIR),
     filename: (req, file, cb) => {
       const ext = path.extname(file.originalname).toLowerCase().replace(/[^.a-z0-9]/g, '').slice(0, 10);
       cb(null, crypto.randomUUID() + ext);
     },
   }),
-  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 2 },
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 3 },
   fileFilter: (req, file, cb) => {
-    if (file.fieldname === 'video' && file.mimetype.startsWith('video/')) cb(null, true);
+    if ((file.fieldname === 'video' || file.fieldname === 'trailer') && file.mimetype.startsWith('video/')) cb(null, true);
     else if (file.fieldname === 'thumbnail' && IMAGE_TYPES.test(file.mimetype)) cb(null, true);
     else cb(new Error(file.fieldname === 'thumbnail' ? 'Thumbnail must be a JPG, PNG or WebP image' : 'Only video files are allowed'));
   },
@@ -332,8 +335,7 @@ app.get('/api/videos', (req, res) => {
 app.get('/api/videos/:id', (req, res) => {
   const v = loadVideos().find((x) => x.id === req.params.id);
   if (!v) return res.status(404).json({ error: 'Video not found' });
-  const user = currentUser(req);
-  res.json({ ...publicVideo(v, isAdmin(req)), myVote: (user && v.voters && v.voters[user.id]) || 'none' });
+  res.json(publicVideo(v, isAdmin(req)));
 });
 
 // ---------- Viewer accounts ----------
@@ -511,10 +513,8 @@ app.post('/api/auth/change-password', requireUser, (req, res) => {
 
 // Admin: list viewers and create a reset link to send someone yourself.
 app.get('/api/admin/users', requireAdmin, (req, res) => {
-  const comments = loadComments();
   res.json(loadUsers().map((u) => ({
     id: u.id, name: u.name, email: u.email, createdAt: u.createdAt,
-    comments: comments.filter((c) => c.userId === u.id).length,
   })).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
 });
 app.post('/api/admin/users/:uid/reset-link', requireAdmin, (req, res) => {
@@ -542,63 +542,12 @@ app.post('/api/me/progress', (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- Comments ----------
-const loadComments = () => loadJson(COMMENTS_FILE, []);
-const saveComments = (c) => saveJson(COMMENTS_FILE, c);
-function publicComment(c, user, admin) {
-  return { id: c.id, name: c.userName, text: c.text, createdAt: c.createdAt, mine: !!user && c.userId === user.id, canDelete: admin || (!!user && c.userId === user.id) };
-}
-
-app.get('/api/videos/:id/comments', (req, res) => {
-  const user = currentUser(req), admin = isAdmin(req);
-  const list = loadComments().filter((c) => c.videoId === req.params.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  res.json(list.map((c) => publicComment(c, user, admin)));
-});
-
-app.post('/api/videos/:id/comments', requireUser, (req, res) => {
-  if (!allow('comment|' + req.user.id, 10, 10 * 60 * 1000)) return res.status(429).json({ error: 'You are commenting too fast. Wait a few minutes.' });
-  if (!loadVideos().some((v) => v.id === req.params.id)) return res.status(404).json({ error: 'Video not found' });
-  const text = String(req.body?.text || '').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 2000);
-  if (!text) return res.status(400).json({ error: 'Write something first.' });
-  const comments = loadComments();
-  const c = { id: crypto.randomBytes(6).toString('base64url'), videoId: req.params.id, userId: req.user.id, userName: req.user.name, text, createdAt: new Date().toISOString() };
-  comments.push(c);
-  saveComments(comments);
-  res.status(201).json(publicComment(c, req.user, isAdmin(req)));
-});
-
-app.delete('/api/comments/:cid', (req, res) => {
-  const user = currentUser(req), admin = isAdmin(req);
-  const comments = loadComments();
-  const c = comments.find((x) => x.id === req.params.cid);
-  if (!c) return res.status(404).json({ error: 'Comment not found' });
-  if (!admin && !(user && c.userId === user.id)) return res.status(403).json({ error: 'You can only delete your own comments' });
-  saveComments(comments.filter((x) => x.id !== c.id));
-  res.json({ ok: true });
-});
-
 // ---------- Views, ratings and watch heatmap ----------
 app.post('/api/videos/:id/view', (req, res) => {
   if (!allow('view|' + req.ip + '|' + req.params.id, 1, 30 * 60 * 1000)) return res.json({ ok: true, counted: false });
   const v = updateVideo(req.params.id, (x) => (x.views = (x.views || 0) + 1));
   if (!v) return res.status(404).json({ error: 'Video not found' });
   res.json({ ok: true, counted: true, views: v.views || 0 });
-});
-
-// One like or dislike per account. Send { to: 'up' | 'down' | 'none' }.
-app.post('/api/videos/:id/vote', requireUser, (req, res) => {
-  const to = ['up', 'down', 'none'].includes(req.body?.to) ? req.body.to : 'none';
-  const field = { up: 'likes', down: 'dislikes' };
-  const v = updateVideo(req.params.id, (x) => {
-    x.voters = x.voters || {};
-    const from = x.voters[req.user.id] || 'none';
-    if (field[from]) x[field[from]] = Math.max(0, (x[field[from]] || 0) - 1);
-    if (field[to]) x[field[to]] = (x[field[to]] || 0) + 1;
-    if (to === 'none') delete x.voters[req.user.id];
-    else x.voters[req.user.id] = to;
-  });
-  if (!v) return res.status(404).json({ error: 'Video not found' });
-  res.json({ likes: v.likes || 0, dislikes: v.dislikes || 0, myVote: v.voters[req.user.id] || 'none' });
 });
 
 // Which parts of the video were watched: a list of bucket numbers (0-99).
@@ -713,16 +662,17 @@ app.put('/api/featured', requireAdmin, (req, res) => {
 
 // ---------- Managing videos (admin only) ----------
 app.post('/api/videos', requireAdmin, (req, res) => {
-  upload.fields([{ name: 'video', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }])(req, res, async (err) => {
+  upload.fields([{ name: 'video', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }, { name: 'trailer', maxCount: 1 }])(req, res, async (err) => {
     const videoFile = req.files?.video?.[0];
     const thumbFile = req.files?.thumbnail?.[0];
+    const trailerFile = req.files?.trailer?.[0];
     const discard = (f) => f && fs.rm(f.path, { force: true }, () => {});
     if (err) {
-      discard(videoFile); discard(thumbFile);
+      discard(videoFile); discard(thumbFile); discard(trailerFile);
       const msg = err.code === 'LIMIT_FILE_SIZE' ? `File is larger than ${MAX_UPLOAD_MB} MB` : err.message;
       return res.status(400).json({ error: msg });
     }
-    if (!videoFile) { discard(thumbFile); return res.status(400).json({ error: 'No video file received' }); }
+    if (!videoFile) { discard(thumbFile); discard(trailerFile); return res.status(400).json({ error: 'No video file received' }); }
     if (thumbFile && thumbFile.size > MAX_THUMB_BYTES) {
       discard(videoFile); discard(thumbFile);
       return res.status(400).json({ error: 'Thumbnail image must be under 15 MB' });
@@ -759,15 +709,90 @@ app.post('/api/videos', requireAdmin, (req, res) => {
     videos.push(video);
     saveVideos(videos);
     enqueue(video.id);
-    res.status(201).json({ ...publicVideo(video), thumbWarning });
+    if (trailerFile) startTrailer(video.id, trailerFile.path);
+    res.status(201).json({ ...publicVideo(loadVideos().find((x) => x.id === video.id) || video), thumbWarning });
   });
 });
+
+// ---------- Uploaded trailers (home page banner) ----------
+// Saved as <video file name>_trailer.mp4, so it is deleted together with the video.
+const trailerUploader = multer({
+  dest: TMP_DIR,
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, cb) => (file.mimetype.startsWith('video/') ? cb(null, true) : cb(new Error('The trailer must be a video file'))),
+});
+async function startTrailer(id, tmpPath) {
+  const v = updateVideo(id, (x) => { x.trailerStatus = 'processing'; });
+  if (!v) return fs.rm(tmpPath, { force: true }, () => {});
+  const filename = baseName(v) + '_trailer.mp4';
+  const part = videoPath(baseName(v) + '_trailer.part.mp4');
+  try {
+    const info = await makeTrailer(tmpPath, part);
+    fs.renameSync(part, videoPath(filename));
+    const saved = updateVideo(id, (x) => {
+      x.trailerFile = { filename, duration: info.duration, version: ((x.trailerFile && x.trailerFile.version) || 0) + 1 };
+      delete x.trailerStatus;
+    });
+    if (!saved) fs.rm(videoPath(filename), { force: true }, () => {});
+  } catch (err) {
+    console.error('Trailer for ' + id + ' failed:', err.message);
+    fs.rm(part, { force: true }, () => {});
+    updateVideo(id, (x) => { x.trailerStatus = 'failed'; });
+  } finally {
+    fs.rm(tmpPath, { force: true }, () => {});
+  }
+}
+app.post('/api/videos/:id/trailer', requireAdmin, (req, res) => {
+  trailerUploader.single('trailer')(req, res, (err) => {
+    if (err) {
+      if (req.file) fs.rm(req.file.path, { force: true }, () => {});
+      return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'File is larger than ' + MAX_UPLOAD_MB + ' MB' : err.message });
+    }
+    if (!req.file) return res.status(400).json({ error: 'No trailer file received' });
+    if (!loadVideos().some((x) => x.id === req.params.id)) {
+      fs.rm(req.file.path, { force: true }, () => {});
+      return res.status(404).json({ error: 'Video not found' });
+    }
+    startTrailer(req.params.id, req.file.path);
+    res.status(202).json(publicVideo(loadVideos().find((x) => x.id === req.params.id)));
+  });
+});
+app.delete('/api/videos/:id/trailer', requireAdmin, (req, res) => {
+  let file = null;
+  const v = updateVideo(req.params.id, (x) => { file = x.trailerFile && x.trailerFile.filename; delete x.trailerFile; delete x.trailerStatus; });
+  if (!v) return res.status(404).json({ error: 'Video not found' });
+  if (file) fs.rm(videoPath(file), { force: true }, () => {});
+  res.json(publicVideo(v));
+});
+
+// A trailer for the home page banner: a YouTube link (watch, youtu.be, embed or shorts) or a bare video id.
+// An optional start time (&t=12 or &start=12) skips studio logos. Empty or unrecognised input clears it.
+function parseTrailer(input) {
+  const text = String(input || '').trim();
+  if (!text) return null;
+  const ID = /^[\w-]{11}$/;
+  let id = ID.test(text) ? text : null, start = 0;
+  if (!id) {
+    try {
+      const u = new URL(text.includes('://') ? text : 'https://' + text);
+      if (!/(^|\.)(youtube\.com|youtube-nocookie\.com|youtu\.be)$/.test(u.hostname)) return null;
+      id = u.hostname.endsWith('youtu.be') ? u.pathname.slice(1)
+        : u.searchParams.get('v') || (u.pathname.match(/\/(?:embed|shorts|live)\/([\w-]{11})/) || [])[1];
+      start = parseInt(u.searchParams.get('t') || u.searchParams.get('start'), 10) || 0;
+    } catch { return null; }
+  }
+  return id && ID.test(id) ? { youtube: id, start: Math.max(0, Math.min(start, 3600)) } : null;
+}
 
 app.patch('/api/videos/:id', requireAdmin, (req, res) => {
   const v = updateVideo(req.params.id, (x) => {
     if (typeof req.body.title === 'string' && req.body.title.trim()) x.title = req.body.title.trim().slice(0, 200);
     if (typeof req.body.description === 'string') x.description = req.body.description.trim().slice(0, 5000);
     if (req.body.tags !== undefined) x.tags = normalizeTags(req.body.tags);
+    if (typeof req.body.trailer === 'string') {
+      const t = parseTrailer(req.body.trailer);
+      if (t) x.trailer = t; else delete x.trailer;
+    }
   });
   if (!v) return res.status(404).json({ error: 'Video not found' });
   res.json(publicVideo(v));
@@ -810,7 +835,6 @@ app.delete('/api/videos/:id', requireAdmin, (req, res) => {
   const [removed] = videos.splice(idx, 1);
   saveVideos(videos);
   removeVideoFiles(removed);
-  saveComments(loadComments().filter((c) => c.videoId !== removed.id));
   const settings = loadJson(SETTINGS_FILE, {});
   if ((settings.featured || []).includes(removed.id)) {
     saveJson(SETTINGS_FILE, { ...settings, featured: settings.featured.filter((id) => id !== removed.id) });

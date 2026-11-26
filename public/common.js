@@ -50,10 +50,6 @@ function fmtCount(n) {
   return String(n);
 }
 
-function ratingPercent(v) {
-  const total = (v.likes || 0) + (v.dislikes || 0);
-  return total ? Math.round(((v.likes || 0) / total) * 100) : null;
-}
 const topHeight = (v) => Math.max(0, ...(v.sources || []).map((s) => s.height || 0));
 
 // Replaces text in static HTML marked with data-t / data-t-placeholder / data-t-aria.
@@ -248,56 +244,62 @@ function openAccountMenu() {
 }
 
 // ---------- Navigation ----------
-// Top bar: logo on the left, page tabs in the middle, search + account on the right.
+// Top bar: logo on the left (it goes home), then a search field and the account button on the right.
 // See-through over the banner, solid black once the page scrolls.
-function renderSidebar(active) {
-  const items = [
-    ['home', 'Home', '/'],
-    ['search', 'Search', '/?view=search'],
-  ];
+// The search page uses this same field for live results; on other pages Enter opens the results.
+function topSearchField() {
+  const input = el('input', { type: 'search', name: 'q', placeholder: 'Search', 'aria-label': 'Search videos',
+    autocomplete: 'off', spellcheck: 'false', enterkeyhint: 'search' });
+  const clear = el('button', { class: 'top-find-clear', type: 'button', 'aria-label': 'Clear search', hidden: '' }, icon('close'));
+  const form = el('form', { class: 'top-find', role: 'search', action: '/' }, icon('search'), input, clear);
+  const sync = () => { clear.hidden = !input.value; };
+  input.addEventListener('input', sync);
+  clear.onclick = () => {
+    input.value = '';
+    sync();
+    input.focus();
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (form.dataset.live) return; // the search page already shows results as you type
+    const q = input.value.trim();
+    location.href = q ? '/?q=' + encodeURIComponent(q) : '/?view=search';
+  });
+  form.sync = sync;
+  return form;
+}
+
+function renderSidebar() {
   const accountBtn = el('button', { class: 'top-account', type: 'button' }, 'Sign In');
   accountBtn.onclick = () => (auth.user ? openAccountMenu() : openAuthDialog('signin'));
   auth.ready.then(() => {
     if (!auth.user) return;
     accountBtn.classList.add('signed-in');
-    accountBtn.replaceChildren(el('span', { class: 'avatar' }, auth.user.name[0].toUpperCase()), el('span', { class: 'top-account-name' }, auth.user.name));
+    accountBtn.replaceChildren(el('span', { class: 'avatar' }, auth.user.name[0].toUpperCase()));
+    accountBtn.title = 'Your account';
     accountBtn.setAttribute('aria-label', 'Your account');
   });
 
   const nav = el('nav', { class: 'topbar', 'aria-label': 'Main' },
     el('a', { class: 'top-logo', href: '/' }, el('span', { class: 'logo-mark' }), el('span', { class: 'site-name' })),
-    el('div', { class: 'top-tabs' }, ...items.map(([ic, label, href]) =>
-      el('a', { class: 'top-tab' + (ic === active ? ' active' : ''), href, ...(ic === active ? { 'aria-current': 'page' } : {}) }, label))),
-    el('div', { class: 'top-right' },
-      el('a', { class: 'top-search', href: '/?view=search', 'aria-label': 'Search' }, icon('search')),
-      accountBtn));
+    el('div', { class: 'top-right' }, topSearchField(), accountBtn));
   document.body.prepend(nav);
-  const sync = () => nav.classList.toggle('scrolled', window.scrollY > 8);
+  // Scrolling down tucks the bar away; any scroll up brings it straight back.
+  // It always shows near the top of the page and while you're using the search field.
+  let lastY = window.scrollY;
+  const sync = () => {
+    const y = Math.max(0, window.scrollY);
+    nav.classList.toggle('scrolled', y > 8);
+    const typing = nav.contains(document.activeElement) && document.activeElement.tagName === 'INPUT';
+    if (y < nav.offsetHeight || typing) nav.classList.remove('tucked');
+    else if (y > lastY + 4) nav.classList.add('tucked');
+    else if (y < lastY - 4) nav.classList.remove('tucked');
+    if (Math.abs(y - lastY) > 4) lastY = y;
+  };
   window.addEventListener('scroll', sync, { passive: true });
+  nav.addEventListener('focusin', () => nav.classList.remove('tucked')); // e.g. tabbing to it with the keyboard
   sync();
-  renderFooter();
-}
-
-// Footer: site name, links, and the TMDB credit when TMDB pictures are on the site.
-function renderFooter() {
-  const credit = el('p', { class: 'foot-credit', hidden: '' },
-    'Movie and TV information and images from ',
-    el('a', { href: 'https://www.themoviedb.org/', target: '_blank', rel: 'noopener noreferrer' }, 'TMDB'),
-    '. This product uses the TMDB API but is not endorsed or certified by TMDB.');
-  const commons = el('p', { class: 'foot-credit', hidden: '' },
-    'Posters from ', el('a', { href: 'https://commons.wikimedia.org/', target: '_blank', rel: 'noopener noreferrer' }, 'Wikimedia Commons'),
-    " (public domain or Creative Commons; each title's About section links to its poster's licence). Descriptions from ",
-    el('a', { href: 'https://en.wikipedia.org/', target: '_blank', rel: 'noopener noreferrer' }, 'Wikipedia'),
-    ', CC BY-SA 4.0.');
-  const foot = el('footer', { class: 'site-footer' },
-    el('div', { class: 'foot-top' },
-      el('a', { class: 'top-logo', href: '/' }, el('span', { class: 'logo-mark' }), el('span', { class: 'site-name' })),
-      el('nav', { class: 'foot-links', 'aria-label': 'Footer' },
-        el('a', { href: '/' }, 'Home'), el('a', { href: '/?view=search' }, 'Search'))),
-    credit, commons,
-    el('p', { class: 'foot-copy' }, `© ${new Date().getFullYear()} `, el('span', { class: 'site-name' }), '. A personal project.'));
-  document.body.append(foot);
-  siteConfig.then((c) => { credit.hidden = !c.tmdb; commons.hidden = !c.commons; });
 }
 
 const siteConfig = getJSON('/api/config').catch(() => ({}));
@@ -345,9 +347,10 @@ function heroSrc(v) {
   return r ? r.url : v.url;
 }
 
-// "2026 • 1:45 • 3 weeks ago"
+// "1957 • 1:45 • Added 3 weeks ago". The year is the film's release year, left out when it isn't known.
 function metaLine(v, durationOverride) {
-  const bits = [String(new Date(v.createdAt).getFullYear()), formatDuration(durationOverride || v.duration), timeAgo(v.createdAt)]
+  const added = timeAgo(v.createdAt);
+  const bits = [v.year ? String(v.year) : '', formatDuration(durationOverride || v.duration), added && 'Added ' + added]
     .filter(Boolean);
   const out = [];
   bits.forEach((b, i) => { if (i) out.push(el('span', { class: 'dot' })); out.push(el('span', {}, b)); });
@@ -426,12 +429,8 @@ function tile(v) {
       ...(top >= 720 ? [el('span', { class: 'badge-hd' }, top >= 2160 ? '4K' : 'HD')] : []),
       el('span', { class: 'tile-dur' }, formatDuration(v.duration)),
       el('span', { class: 'tile-play' }, icon('play'))),
-    el('div', { class: 'tile-body' },
-      el('div', { class: 'tile-title' }, v.title),
-      el('div', { class: 'tile-meta' },
-        el('span', {}, t(v.views === 1 ? '{n} view' : '{n} views', { n: fmtCount(v.views) })),
-        el('span', { class: 'dot' }),
-        el('span', {}, timeAgo(v.createdAt)))));
+    // Under the poster: just the movie's name.
+    el('div', { class: 'tile-body' }, el('div', { class: 'tile-title' }, v.title)));
   attachTilt(a);
   return a;
 }

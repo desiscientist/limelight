@@ -55,6 +55,10 @@
               If you skip this, a frame from the video is used, and you can change it any time later.</p>
           </div>
         </div>
+        <label for="trailerFile">Trailer for the home page banner (optional)</label>
+        <input type="file" id="trailerFile" accept="video/*">
+        <p class="meta">A video file of the trailer. When this movie is in the banner, it plays in full there.
+          It's converted to a web-friendly 1080p MP4 after uploading.</p>
         <div class="progress" id="progress"><div></div></div>
         <p class="status" id="uploadStatus"></p>
         <button type="submit" id="uploadBtn">Upload</button>
@@ -182,6 +186,7 @@
       form.append('description', $('description').value);
       form.append('tags', $('tags').value);
       if (thumbChosen) form.append('thumbnail', thumbChosen);
+      if ($('trailerFile').files[0]) form.append('trailer', $('trailerFile').files[0]);
       form.append('video', chosen);
 
       const xhr = new XMLHttpRequest();
@@ -201,7 +206,7 @@
         let body = {};
         try { body = JSON.parse(xhr.responseText); } catch {}
         if (xhr.status === 201) {
-          setStatus(body.thumbWarning ? 'Uploaded! ' + body.thumbWarning : 'Uploaded! It is now live on the site.', !!body.thumbWarning);
+          setStatus(body.thumbWarning ? 'Uploaded. ' + body.thumbWarning : 'Uploaded and live on the site', !!body.thumbWarning);
           $('uploadForm').reset();
           setThumb(null);
           chosen = null;
@@ -244,7 +249,7 @@
       videos.sort((x, y) => y.createdAt.localeCompare(x.createdAt));
       allVideos = videos;
       renderFeatured();
-      if (videos.some((v) => v.processing)) pollTimer = setTimeout(loadList, 2000);
+      if (videos.some((v) => v.processing || v.trailerStatus === 'processing')) pollTimer = setTimeout(loadList, 2000);
       $('noVideos').hidden = videos.length > 0;
       // Suggest tags you've used before.
       const used = [...new Set(videos.flatMap((v) => v.tags))].sort();
@@ -267,6 +272,9 @@
           const desc = el('textarea', { maxlength: '5000' }); desc.value = v.description;
           const tags = el('input', { type: 'text', list: 'tagSuggestions', placeholder: 'travel, vlog, mountains' });
           tags.value = v.tags.join(', ');
+          const trailerBox = trailerFileEditor(v);
+          const trailer = el('input', { type: 'url', placeholder: 'https://www.youtube.com/watch?v=...' });
+          trailer.value = v.trailer ? 'https://www.youtube.com/watch?v=' + v.trailer.youtube + (v.trailer.start ? '&t=' + v.trailer.start : '') : '';
           const save = el('button', { type: 'submit' }, 'Save');
           const cancel = el('button', { class: 'secondary', type: 'button' }, 'Cancel');
           cancel.onclick = loadList;
@@ -275,6 +283,8 @@
             el('label', {}, 'Title'), title,
             el('label', {}, 'Description'), desc,
             el('label', {}, 'Tags (separate with commas)'), tags,
+            el('label', {}, 'Trailer file for the home page banner (plays in full)'), trailerBox,
+            el('label', {}, 'Or a YouTube trailer link (used only if there is no trailer file; add &t=10 to skip 10 seconds)'), trailer,
             el('div', { class: 'edit-actions' }, save, cancel));
           form.onsubmit = async (e) => {
             e.preventDefault();
@@ -282,7 +292,7 @@
             await fetch('/api/videos/' + v.id, {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ title: title.value, description: desc.value, tags: tags.value }),
+              body: JSON.stringify({ title: title.value, description: desc.value, tags: tags.value, trailer: trailer.value }),
             });
             loadList();
           };
@@ -433,6 +443,64 @@
     $('featSearch').addEventListener('input', renderResults);
     $('featSearch').addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('featSearch').value = ''; renderResults(); } });
 
+    // ----- Trailer file (home page banner) -----
+    function trailerFileEditor(v) {
+      const status = el('p', { class: 'meta' });
+      const input = el('input', { type: 'file', accept: 'video/*' });
+      const remove = el('button', { class: 'secondary', type: 'button' }, 'Remove trailer');
+      const bar = el('div', { class: 'progress' }, el('div'));
+      const render = (x) => {
+        status.classList.remove('error');
+        if (x.trailerStatus === 'processing') status.textContent = 'Preparing the trailer for the web...';
+        else if (x.trailerStatus === 'failed') { status.textContent = 'This trailer file could not be read. Try another file.'; status.classList.add('error'); }
+        else if (x.trailerFile) status.textContent = 'Trailer ready (' + formatDuration(x.trailerFile.duration) + '). Choose a file to replace it.';
+        else status.textContent = 'No trailer file yet.';
+        remove.hidden = !x.trailerFile && x.trailerStatus !== 'failed';
+      };
+      render(v);
+      input.onchange = () => {
+        const f = input.files[0];
+        if (!f) return;
+        const form = new FormData();
+        form.append('trailer', f);
+        const xhr = new XMLHttpRequest();
+        bar.style.display = 'block';
+        xhr.upload.onprogress = (ev) => {
+          if (!ev.lengthComputable) return;
+          const pct = Math.round((ev.loaded / ev.total) * 100);
+          bar.firstElementChild.style.width = pct + '%';
+          status.textContent = 'Uploading trailer... ' + pct + '%';
+        };
+        xhr.onload = () => {
+          bar.style.display = 'none';
+          let body = {};
+          try { body = JSON.parse(xhr.responseText); } catch {}
+          if (xhr.status === 202) { render(body); pollTrailer(); }
+          else { status.textContent = body.error || 'Trailer upload failed.'; status.classList.add('error'); }
+          input.value = '';
+        };
+        xhr.onerror = () => { bar.style.display = 'none'; status.textContent = 'Network error during upload.'; status.classList.add('error'); };
+        xhr.open('POST', '/api/videos/' + v.id + '/trailer');
+        xhr.send(form);
+      };
+      // While the server prepares it, check back every 2 seconds.
+      function pollTrailer() {
+        setTimeout(async () => {
+          const x = await getJSON('/api/videos/' + v.id).catch(() => null);
+          if (!x || !status.isConnected) return;
+          render(x);
+          if (x.trailerStatus === 'processing') pollTrailer();
+        }, 2000);
+      }
+      if (v.trailerStatus === 'processing') pollTrailer();
+      remove.onclick = async () => {
+        if (!confirm('Remove the trailer file for "' + v.title + '"?')) return;
+        const res = await fetch('/api/videos/' + v.id + '/trailer', { method: 'DELETE' });
+        if (res.ok) render(await res.json());
+      };
+      return el('div', { class: 'trailer-file' }, status, el('div', { class: 'edit-actions' }, input, remove), bar);
+    }
+
     // ----- Thumbnail editor -----
     function thumbnailEditor(v, onChange) {
       const img = el('img', { class: 'thumb-edit-img', alt: 'Current thumbnail' });
@@ -517,7 +585,7 @@
           const input = el('input', { type: 'text', readonly: '' });
           input.value = data.link;
           const copy = el('button', { type: 'button' }, 'Copy');
-          copy.onclick = async () => { copy.textContent = (await copyText(data.link)) ? 'Copied!' : 'Copy failed'; };
+          copy.onclick = async () => { copy.textContent = (await copyText(data.link)) ? 'Copied' : 'Copy failed'; };
           out.replaceChildren(input, copy);
           input.select();
         };
@@ -525,7 +593,7 @@
           el('span', { class: 'avatar' }, (u.name[0] || '?').toUpperCase()),
           el('div', { class: 'info' },
             el('strong', {}, u.name),
-            el('div', { class: 'meta' }, `${u.email} · joined ${timeAgo(u.createdAt)} · ${u.comments} comment${u.comments === 1 ? '' : 's'}`),
+            el('div', { class: 'meta' }, `${u.email} · joined ${timeAgo(u.createdAt)}`),
             out),
           btn);
       }));

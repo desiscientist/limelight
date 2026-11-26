@@ -8,7 +8,8 @@
     "start": "node --env-file-if-exists=.env server.js",
     "placeholders": "node --env-file-if-exists=.env scripts/placeholders.js",
     "placeholders:remove": "node --env-file-if-exists=.env scripts/placeholders.js remove",
-    "placeholders:retag": "node --env-file-if-exists=.env scripts/placeholders.js retag"
+    "placeholders:retag": "node --env-file-if-exists=.env scripts/placeholders.js retag",
+    "placeholders:titles": "node --env-file-if-exists=.env scripts/placeholders.js titles"
   },
   "engines": {
     "node": ">=22"

@@ -112,4 +112,17 @@ function makeHlsVariant(input, prefix) {
   ]);
 }
 
-module.exports = { probe, plan, transcode, makePoster, makeStoryboard, makeHlsVariant };
+// A trailer for the home page banner: a web-friendly MP4 of at most 1080p that starts playing at once.
+// Already H.264 within 1080p: only repackaged (seconds). Otherwise re-encoded.
+async function makeTrailer(input, output, onProgress = () => {}) {
+  const info = await probe(input);
+  const short = Math.min(info.width, info.height);
+  if (info.codec === 'h264' && info.pixFmt === 'yuv420p' && !info.rotated && short <= 1080) {
+    await run(ffmpegPath, [...quiet, '-i', input, '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy', '-movflags', '+faststart', output]);
+  } else {
+    await transcode(input, output, Math.min(short, 1080), info, info.duration, onProgress);
+  }
+  return { duration: info.duration, width: info.width, height: info.height };
+}
+
+module.exports = { probe, plan, transcode, makePoster, makeStoryboard, makeHlsVariant, makeTrailer };

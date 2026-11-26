@@ -28,19 +28,10 @@
           <p class="ph-desc" id="desc" hidden></p>
           <div class="tv-meta" id="uploaded"></div>
           <div class="ph-buttons">
-            <button class="ph-btn" id="likeBtn" type="button" data-t-aria="I like this"></button>
-            <button class="ph-btn" id="dislikeBtn" type="button" data-t-aria="I dislike this"></button>
             <button class="ph-btn round" id="shareBtn" type="button"></button>
             <button class="ph-btn round" id="reportBtn" type="button"></button>
           </div>
         </div>
-        <aside class="tv-score">
-          <div class="ph-views"><span id="views">0</span> <small id="viewsLabel">views</small></div>
-          <div class="ph-rating">
-            <div class="ph-percent" id="percent"></div>
-            <div class="ph-ratingbar"><div id="ratingFill"></div></div>
-          </div>
-        </aside>
       </section>
     </div>
 
@@ -51,22 +42,6 @@
       <button class="switch" id="autoplaySwitch" type="button" role="switch" data-t-aria="Autoplay next video"></button>
     </label>
     <div id="relatedSection" hidden><div id="related"></div></div>
-
-    <section class="comments tv-section" id="comments">
-      <h2 class="tv-h" id="commentsTitle">Comments</h2>
-      <div id="commentBox"></div>
-      <ul class="comment-list" id="commentList"></ul>
-    </section>
-
-    <!-- About -->
-    <section class="tv-about tv-section" id="about">
-      <h2 class="tv-h" data-t="About">About</h2>
-      <dl class="tv-facts" id="facts"></dl>
-      <div class="ph-cats" id="catsRow" hidden>
-        <span class="ph-label" data-t="Categories">Categories</span>
-        <span class="ph-pills" id="tags"></span>
-      </div>
-    </section>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
@@ -74,7 +49,7 @@
   <script src="/common.js"></script>
   <script src="/player.js"></script>
   <script>
-    renderSidebar('');
+    renderSidebar();
     translatePage();
     const $ = (id) => document.getElementById(id);
 
@@ -108,7 +83,7 @@
       const copyBtn = (getText, label) => {
         const b = el('button', { class: 'btn', type: 'button' }, icon('copy'), label);
         b.onclick = async () => {
-          b.replaceChildren(icon('copy'), t((await copyText(getText())) ? 'Copied!' : 'Copy failed'));
+          b.replaceChildren(icon('copy'), t((await copyText(getText())) ? 'Copied' : 'Copy failed'));
           setTimeout(() => b.replaceChildren(icon('copy'), label), 2000);
         };
         return b;
@@ -150,72 +125,9 @@
         const res = await fetch(`/api/videos/${encodeURIComponent(v.id)}/report`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason, message: msg.value }),
         }).catch(() => null);
-        if (res && res.ok) { close(); toast(t('Thanks! Your report was sent.')); }
+        if (res && res.ok) { close(); toast(t('Report sent. Thanks for letting us know')); }
         else { send.disabled = false; status.textContent = t('Could not send the report. Please try again later.'); status.classList.add('error'); }
       };
-    }
-
-    // ---------- Comments (anyone can read; signed-in viewers can write) ----------
-    async function setupComments(v) {
-      let comments = await getJSON('/api/videos/' + encodeURIComponent(v.id) + '/comments').catch(() => []);
-      const title = () => { $('commentsTitle').textContent = comments.length ? `Comments (${comments.length.toLocaleString()})` : 'Comments'; };
-
-      function commentItem(c) {
-        const li = el('li', { class: 'comment' },
-          el('span', { class: 'avatar' }, (c.name[0] || '?').toUpperCase()),
-          el('div', { class: 'comment-body' },
-            el('div', { class: 'comment-head' }, el('strong', {}, c.name), el('span', { class: 'meta' }, timeAgo(c.createdAt)),
-              ...(c.mine ? [el('span', { class: 'you' }, 'You')] : [])),
-            el('p', { class: 'comment-text' }, c.text)));
-        if (c.canDelete) {
-          const del = el('button', { class: 'comment-del', type: 'button', 'aria-label': 'Delete comment', title: 'Delete comment' }, icon('close'));
-          del.onclick = async () => {
-            if (!confirm('Delete this comment?')) return;
-            const res = await fetch('/api/comments/' + c.id, { method: 'DELETE' });
-            if (res.ok) { comments = comments.filter((x) => x.id !== c.id); render(); }
-          };
-          li.append(del);
-        }
-        return li;
-      }
-      function render() {
-        title();
-        $('commentList').replaceChildren(...comments.map(commentItem));
-        if (!comments.length) $('commentList').append(el('li', { class: 'meta no-comments' }, 'No comments yet. Be the first!'));
-      }
-
-      if (auth.user) {
-        const text = el('textarea', { rows: '2', maxlength: '2000', placeholder: 'Add a comment...', 'aria-label': 'Add a comment' });
-        const post = el('button', { class: 'btn', type: 'submit', disabled: '' }, 'Comment');
-        const cancel = el('button', { class: 'btn secondary', type: 'button' }, 'Cancel');
-        const status = el('p', { class: 'status error' });
-        const actions = el('div', { class: 'comment-actions', hidden: '' }, cancel, post);
-        const form = el('form', { class: 'comment-form' },
-          el('span', { class: 'avatar' }, auth.user.name[0].toUpperCase()),
-          el('div', { class: 'comment-input' }, text, status, actions));
-        text.addEventListener('focus', () => { actions.hidden = false; });
-        text.addEventListener('input', () => { post.disabled = !text.value.trim(); });
-        cancel.onclick = () => { text.value = ''; post.disabled = true; actions.hidden = true; status.textContent = ''; };
-        form.onsubmit = async (e) => {
-          e.preventDefault();
-          post.disabled = true;
-          status.textContent = '';
-          const res = await fetch('/api/videos/' + encodeURIComponent(v.id) + '/comments', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text.value }),
-          }).catch(() => null);
-          const data = res ? await res.json().catch(() => ({})) : {};
-          if (res && res.ok) { comments.unshift(data); render(); cancel.onclick(); }
-          else { status.textContent = data.error || 'Could not post your comment. Try again.'; post.disabled = false; }
-        };
-        $('commentBox').replaceChildren(form);
-      } else {
-        const signIn = el('button', { class: 'btn', type: 'button' }, icon('user'), 'Sign in to comment');
-        signIn.onclick = () => openAuthDialog('signin');
-        const signUp = el('button', { class: 'link-btn', type: 'button' }, 'create a free account');
-        signUp.onclick = () => openAuthDialog('signup');
-        $('commentBox').replaceChildren(el('div', { class: 'comment-signin' }, signIn, el('span', { class: 'meta' }, 'or ', signUp)));
-      }
-      render();
     }
 
     (async () => {
@@ -248,9 +160,6 @@
         onTheater: () => setTheater(!$('wrap').classList.contains('theater')),
         getNext: () => ranked[0],
       });
-      if (resumeAt) {
-        toast(t('Resuming from {time}', { time: formatDuration(resumeAt) }), [[t('Start over'), () => { player.video.currentTime = 0; }]]);
-      }
 
       function setTheater(on) {
         $('wrap').classList.toggle('theater', on);
@@ -266,71 +175,29 @@
       player.onAutoplayChange(syncSwitch);
       syncSwitch(player.autoplay);
 
-      // Count one view the first time the video starts playing.
-      player.video.addEventListener('play', async () => {
-        try {
-          const r = await (await fetch(`/api/videos/${encodeURIComponent(v.id)}/view`, { method: 'POST' })).json();
-          if (r.counted) showViews(r.views);
-        } catch {}
+      // While the video plays, the top bar steps aside (it comes back on pause or at the end).
+      const syncPlaying = () => document.body.classList.toggle('video-playing', !player.video.paused && !player.video.ended);
+      // (timeupdate as well, and a check right now: the video may already have started on its own
+      // before these listeners were attached, e.g. when the browser allows autoplay.)
+      ['play', 'playing', 'pause', 'ended', 'emptied', 'timeupdate'].forEach((ev) => player.video.addEventListener(ev, syncPlaying));
+      syncPlaying();
+
+      // Count one view the first time the video starts playing (used for Top 10 and "Most viewed"; not shown here).
+      player.video.addEventListener('play', () => {
+        fetch(`/api/videos/${encodeURIComponent(v.id)}/view`, { method: 'POST' }).catch(() => {});
       }, { once: true });
 
       // ---------- Details ----------
       $('title').textContent = v.title;
-      function showViews(n) {
-        $('views').textContent = fmtCount(n);
-        $('viewsLabel').textContent = t(n === 1 ? 'view' : 'views');
-      }
-      showViews(v.views || 0);
-      // "Video · Tag · Tag" above the title, and "2025 · 12:34 · HD · 3 months ago" under the description.
-      $('kicker').replaceChildren(...['Video', ...v.tags.slice(0, 3).map(capitalize)].map((x) => el('span', {}, x)));
+      // "Sci-fi · Horror · 1950s" above the title (each opens that category), and
+      // "1957 · 0:25 · Added 2 weeks ago · HD" under the description.
+      $('kicker').replaceChildren(...v.tags.slice(0, 3).flatMap((tg, i) => [
+        ...(i ? [el('span', { class: 'sep', 'aria-hidden': 'true' }, '·')] : []),
+        el('a', { href: '/?tag=' + encodeURIComponent(tg) }, capitalize(tg))]));
       const top = topHeight(v);
       const quality = top >= 2160 ? '4K' : top >= 720 ? 'HD' : top ? top + 'p' : '';
       $('uploaded').replaceChildren(...metaLine(v), ...(quality ? [el('span', { class: 'dot' }), el('span', { class: 'tv-badge' }, quality)] : []));
       if (v.description) { $('desc').textContent = v.description; $('desc').hidden = false; }
-      const fact = (label, value) => (value ? [el('dt', {}, label), el('dd', {}, value)] : []);
-      $('facts').replaceChildren(
-        ...[['Uploaded', new Date(v.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })],
-          ['Duration', formatDuration(v.duration)],
-          ['Quality', quality + (v.width ? ` (${v.width}×${v.height})` : '')],
-          ['Views', (v.views || 0).toLocaleString()],
-          ['Released', v.year || ''],
-          // Placeholder posters from Wikimedia Commons: show the licence and link to the original file.
-          ['Poster', v.credit ? el('span', {}, v.credit.license + (v.credit.author ? ' · ' + v.credit.author : '') + ' · ',
-            el('a', { class: 'link', href: v.credit.file, target: '_blank', rel: 'noopener noreferrer' }, 'Source')) : '']]
-          .map(([l, val]) => el('div', { class: 'tv-fact' + (l === 'Poster' ? ' wide' : '') }, ...fact(l, val))));
-      if (v.tags.length) {
-        $('tags').replaceChildren(...v.tags.map((tg) => el('a', { class: 'ph-pill', href: '/?tag=' + encodeURIComponent(tg) }, tg)));
-        $('catsRow').hidden = false;
-      }
-
-      // ---------- Likes / dislikes (signed-in viewers only, one per account) ----------
-      let myVote = v.myVote || 'none';
-      let likes = v.likes || 0, dislikes = v.dislikes || 0;
-      function renderRating() {
-        const pct = ratingPercent({ likes, dislikes });
-        $('percent').replaceChildren(icon('thumbUp'), pct === null ? t('No ratings yet') : pct + '%');
-        $('ratingFill').style.width = (pct || 0) + '%';
-        $('likeBtn').replaceChildren(icon('thumbUp'), fmtCount(likes));
-        $('dislikeBtn').replaceChildren(icon('thumbDown'), fmtCount(dislikes));
-        $('likeBtn').classList.toggle('active', myVote === 'up');
-        $('dislikeBtn').classList.toggle('active', myVote === 'down');
-      }
-      async function vote(dir) {
-        if (!requireSignIn('Create a free account to like or dislike videos.')) return;
-        const to = myVote === dir ? 'none' : dir;
-        try {
-          const res = await fetch(`/api/videos/${encodeURIComponent(v.id)}/vote`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to }),
-          });
-          if (!res.ok) return;
-          const r = await res.json();
-          likes = r.likes; dislikes = r.dislikes; myVote = r.myVote;
-          renderRating();
-        } catch {}
-      }
-      $('likeBtn').onclick = () => vote('up');
-      $('dislikeBtn').onclick = () => vote('down');
-      renderRating();
 
       $('shareBtn').replaceChildren(icon('share'));
       $('shareBtn').setAttribute('aria-label', t('Share'));
@@ -341,7 +208,6 @@
       $('reportBtn').title = t('Report a problem');
       $('reportBtn').onclick = () => reportDialog(v);
 
-      setupComments(v);
 
       // ---------- Up next + related ----------
       const all = (await allPromise).filter((x) => x.id !== v.id);
